@@ -233,12 +233,14 @@ function render() {
 }
 
 function renderSeats() {
+  const viewerSeat = state.players.find((player) => player.id === me)?.seat;
   els.seats.innerHTML = state.players.map((player) => {
     const cards = player.cards?.length ? player.cards.map(cardHTML).join("") : player.cardCount ? `${cardHTML(null)}${cardHTML(null)}` : "";
     const winner = Boolean(state.hand?.result?.winnerIds?.includes(player.id));
     const equity = state.hand?.equities?.[player.id];
     const bubble = chatBubbles.get(player.id);
-    return `<div class="seat ${player.isTurn ? "turn" : ""} ${player.folded ? "folded" : ""} ${player.away ? "away" : ""} ${winner ? "winner" : ""} ${player.id === me ? "own" : ""}" data-pos="${player.seat}">
+    const visualPosition = viewerSeat === undefined ? player.seat : (player.seat - viewerSeat + 8) % 8;
+    return `<div class="seat ${player.isTurn ? "turn" : ""} ${player.folded ? "folded" : ""} ${player.away ? "away" : ""} ${winner ? "winner" : ""} ${player.id === me ? "own" : ""}" data-pos="${visualPosition}" data-seat="${player.seat}">
       ${bubble && bubble.expiresAt > Date.now() ? `<div class="chat-bubble">${escapeHTML(bubble.text)}</div>` : ""}
       <div class="seat-cards">${cards}</div>
       ${player.folded ? '<div class="folded-tag">已弃牌</div>' : ""}
