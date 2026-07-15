@@ -7,6 +7,7 @@ let state = null;
 let me = null;
 let selectedSeat = null;
 let serverClockOffset = 0;
+let animatedHandNumber = null;
 let toastTimer;
 const bubbles = new Map();
 const bubbleTimers = new Map();
@@ -164,15 +165,17 @@ function render() {
 function renderSeats() {
   if (!state) return;
   const viewerSeat = state.players.find((player) => player.id === me)?.seat;
+  const animateDeal = state.phase === "playing" && animatedHandNumber !== state.handNumber;
   $("#zjh-seats").innerHTML = state.players.map((player) => {
     const pos = viewerSeat === undefined ? player.seat : (player.seat - viewerSeat + state.settings.maxPlayers) % state.settings.maxPlayers;
     const showCards = state.phase === "result" || player.id === me && player.seen;
-    const cards = player.cardCount ? (showCards ? player.cards.map(cardHTML).join("") : Array.from({ length: player.cardCount }, () => cardHTML(null)).join("")) : "";
+    const cards = player.cardCount ? (showCards ? player.cards.map((card) => cardHTML(card, animateDeal)).join("") : Array.from({ length: player.cardCount }, () => cardHTML(null, animateDeal)).join("")) : "";
     const bubble = bubbles.get(player.id);
     const status = !player.connected ? "离线" : player.away ? "暂时离座" : player.status;
     const handBadge = state.phase === "result" && player.hand ? `<div class="zjh-hand-badge">${escapeHTML(player.hand.name)}</div>` : "";
     return `<div class="zjh-seat ${player.id === state.dealerId ? "dealer" : ""} ${player.id === state.actionPlayerId ? "turn" : ""} ${player.folded ? "folded" : ""} ${player.id === state.result?.winnerId ? "winner" : ""}" data-pos="${pos}">${bubble && bubble.expiresAt > Date.now() ? `<div class="zjh-bubble">${escapeHTML(bubble.text)}</div>` : ""}<div class="zjh-seat-cards">${cards}</div><div class="zjh-avatar">${escapeHTML(player.name[0] || "诈")}</div><div class="zjh-seat-box"><div class="zjh-seat-name"><span>${escapeHTML(player.name)}</span>${player.id === state.dealerId ? '<i class="zjh-tag">庄</i>' : ""}${player.seen ? '<i class="zjh-tag seen">明</i>' : ""}</div><div class="zjh-seat-points">◆ ${player.points.toLocaleString()} · 已投 ${player.totalBet}</div>${handBadge}<div class="zjh-seat-status">${escapeHTML(status)}</div></div></div>`;
   }).join("");
+  if (animateDeal) animatedHandNumber = state.handNumber;
 }
 
 function renderOwnCards(player) {
@@ -197,10 +200,10 @@ function renderAdmin() {
   $("#zjh-admin-list").innerHTML = state.players.map((player) => `<div class="admin-player-row" data-player-id="${player.id}"><strong>${escapeHTML(player.name)}${player.id === me ? "（你）" : ""}</strong><input data-zjh-points type="number" min="0" value="${player.points}" /><button data-zjh-kick ${player.id === me ? "disabled" : ""}>${player.id === me ? "房主" : "剔除"}</button></div>`).join("");
 }
 
-function cardHTML(card) {
-  if (!card) return '<div class="zjh-card back"></div>';
+function cardHTML(card, dealing = false) {
+  if (!card) return `<div class="zjh-card back ${dealing ? "dealing" : ""}"></div>`;
   const red = card.suit === "h" || card.suit === "d";
-  return `<div class="zjh-card ${red ? "red" : ""}">${card.rank === "T" ? "10" : card.rank}<small>${({ s: "♠", h: "♥", d: "♦", c: "♣" })[card.suit]}</small></div>`;
+  return `<div class="zjh-card ${red ? "red" : ""} ${dealing ? "dealing" : ""}">${card.rank === "T" ? "10" : card.rank}<small>${({ s: "♠", h: "♥", d: "♦", c: "♣" })[card.suit]}</small></div>`;
 }
 function phaseName(phase) { return ({ waiting: "等待", playing: "下注中", result: "结算" })[phase] || phase; }
 

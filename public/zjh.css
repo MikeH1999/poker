@@ -27,7 +27,8 @@
 .zjh-seat[data-pos="3"] { left: 77%; top: 9%; }
 .zjh-seat[data-pos="4"] { left: 87%; top: 72%; }
 .zjh-seat-cards { height: 55px; display: flex; justify-content: center; align-items: end; gap: 3px; }
-.zjh-card { width: 39px; aspect-ratio: .72; padding: 4px; display: flex; flex-direction: column; align-items: flex-start; border: 2px solid #fff; border-radius: 5px; color: #20231f; background: #fffefa; box-shadow: 0 6px 13px rgba(0,0,0,.35); font: 800 15px Georgia; line-height: .88; animation: zjh-card-in .35s ease both; }
+.zjh-card { width: 39px; aspect-ratio: .72; padding: 4px; display: flex; flex-direction: column; align-items: flex-start; border: 2px solid #fff; border-radius: 5px; color: #20231f; background: #fffefa; box-shadow: 0 6px 13px rgba(0,0,0,.35); font: 800 15px Georgia; line-height: .88; }
+.zjh-card.dealing { animation: zjh-card-in .35s ease both; }
 .zjh-card.red { color: #d9363e; }
 .zjh-card small { font-size: 9px; }
 .zjh-card.back { padding: 3px; color: #f5d681; background: repeating-linear-gradient(135deg,#49372d 0 6px,#33271f 6px 12px); }
