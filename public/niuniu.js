@@ -7,6 +7,9 @@ let state = null;
 let me = null;
 let selectedSeat = null;
 let toastTimer;
+let serverClockOffset = 0;
+let marqueeTimer = null;
+let marqueePlayerId = null;
 const bubbles = new Map();
 const bubbleTimers = new Map();
 const nameKey = "riverclub:niu:name";
@@ -33,6 +36,7 @@ $("#niu-create-form").addEventListener("submit", async (event) => {
     startingPoints: $("#niu-starting-points").value,
     baseScore: $("#niu-base-score").value,
     maxPlayers: $("#niu-max-players").value,
+    decisionTimeSeconds: $("#niu-decision-time").value,
   } });
   if (!response.ok) return toast(response.error);
   localStorage.setItem(tokenKey(response.roomId), response.token);
@@ -105,8 +109,10 @@ if (roomId) {
 
 socket.on("connect", () => { if (roomId && state) joinRoom(); });
 socket.on("niu:state", (nextState) => {
+  serverClockOffset = (nextState.serverTime || Date.now()) - Date.now();
   state = nextState;
   if (!me) me = state.viewer?.id;
+  updateMarquee();
   render();
 });
 socket.on("niu:chat-bubble", ({ playerId, text, expiresAt }) => {
@@ -126,10 +132,12 @@ function render() {
   $("#niu-base").textContent = `底注 ${state.settings.baseScore}`;
   $("#niu-phase").textContent = phasePrompt(state.phase);
   const banker = state.players.find((candidate) => candidate.id === state.bankerId);
-  $("#niu-banker-info").textContent = banker ? `庄家 ${banker.name} · 抢庄 ${state.bankerBid} 倍` : "先发四张 · 再抢庄";
+  $("#niu-banker-info").textContent = banker ? `庄家 ${banker.name} · 抢庄 ${state.bankerBid} 倍` : state.phase === "banker_select" ? `${state.bankerCandidates.length} 位最高倍数玩家中随机定庄` : "先发四张 · 再抢庄";
   $("#niu-player-count").textContent = state.players.length;
   $$(".host-only").forEach((element) => element.classList.toggle("hidden", !isHost));
   $("#niu-pause").textContent = state.paused ? "恢复" : "暂停";
+  $("#niu-auto-start").textContent = `自动下一局：${state.settings.autoStartNextRound ? "开" : "关"}`;
+  $("#niu-admin-auto").textContent = `自动下一局：${state.settings.autoStartNextRound ? "开" : "关"}`;
   $("#niu-away").textContent = player?.away ? "我回来了" : "暂时离座";
   $("#niu-away").classList.toggle("hidden", Boolean(needsReseat));
   $("#niu-mobile-away").classList.toggle("hidden", Boolean(needsReseat));
@@ -143,12 +151,13 @@ function render() {
   $("#niu-reseat").classList.toggle("hidden", !needsReseat);
   const canBid = player && state.phase === "bid" && player.cardCount === 4 && player.bid === null && !state.paused;
   const canBet = player && state.phase === "bet" && player.id !== state.bankerId && player.cardCount === 4 && player.bet === null && !state.paused;
+  $$('[data-niu-bid]').forEach((button) => { const multiplier = Number(button.dataset.niuBid); button.disabled = !canBid || (multiplier > 0 && player.points < state.settings.baseScore * multiplier); button.title = button.disabled && canBid ? "积分不足" : ""; });
+  $$('[data-niu-bet]').forEach((button) => { const multiplier = Number(button.dataset.niuBet); button.disabled = !canBet || player.points < state.settings.baseScore * state.bankerBid * multiplier; button.title = button.disabled && canBet ? "积分不足" : ""; });
   $("#niu-bid-actions").classList.toggle("hidden", !canBid);
   $("#niu-bet-actions").classList.toggle("hidden", !canBet);
   $("#niu-action-message").classList.toggle("hidden", canBid || canBet || canStart || needsReseat);
-  if (!canBid && !canBet && !canStart && !needsReseat) $("#niu-action-message").textContent = state.paused ? "游戏已暂停" : player?.status || "等待其他玩家";
-  $("#niu-result").classList.toggle("hidden", !state.result);
-  if (state.result) $("#niu-result").textContent = state.result.text;
+  if (!canBid && !canBet && !canStart && !needsReseat) $("#niu-action-message").textContent = state.paused ? "游戏已暂停" : state.nextRoundAt ? "5 秒后自动开始下一局" : player?.status || "等待其他玩家";
+  updatePhaseTimer();
 }
 
 function renderSeats() {
@@ -156,14 +165,19 @@ function renderSeats() {
   const viewerSeat = state.players.find((player) => player.id === me)?.seat;
   $("#niu-seats").innerHTML = state.players.map((player) => {
     const pos = viewerSeat === undefined ? player.seat : (player.seat - viewerSeat + 6) % 6;
-    const cards = player.cards.length ? player.cards.map(cardHTML).join("") : Array.from({ length: player.cardCount }, () => cardHTML(null)).join("");
+    const dealing = state.phase === "deal" || state.phase === "fifth_deal";
+    const cards = player.cards.length ? player.cards.map((card, index) => cardHTML(card, dealing && index === player.cardCount - 1)).join("") : Array.from({ length: player.cardCount }, (_, index) => cardHTML(null, dealing && index === player.cardCount - 1)).join("");
     const bubble = bubbles.get(player.id);
-    return `<div class="niu-seat ${player.id === state.bankerId ? "banker" : ""}" data-pos="${pos}" data-seat="${player.seat}">${bubble && bubble.expiresAt > Date.now() ? `<div class="niu-bubble">${escapeHTML(bubble.text)}</div>` : ""}<div class="niu-seat-cards">${cards}</div><div class="niu-avatar">${escapeHTML(player.name[0] || "牛")}</div><div class="niu-seat-box"><div class="niu-seat-name"><span>${escapeHTML(player.name)}</span>${player.id === state.bankerId ? '<i class="banker-tag">庄</i>' : ""}${player.rejoinCount ? `<i class="rebuy-tag">重坐×${player.rejoinCount}</i>` : ""}</div><div class="niu-seat-points">◆ ${player.points.toLocaleString()}${player.delta ? ` · ${player.delta > 0 ? "+" : ""}${player.delta}` : ""}</div><div class="niu-seat-status">${escapeHTML(player.status)}</div></div></div>`;
+    const selecting = player.id === marqueePlayerId;
+    const statusText = !player.connected ? "离线" : player.away ? "暂时离座" : player.status;
+    const handBadge = player.hand ? `<div class="niu-hand-badge ${player.delta > 0 ? "win" : player.delta < 0 ? "lose" : ""}">${escapeHTML(player.hand.name)} <b>×${player.hand.multiplier}</b></div>` : "";
+    return `<div class="niu-seat ${player.id === state.bankerId ? "banker" : ""} ${selecting ? "banker-marquee" : ""} ${player.delta > 0 ? "round-winner" : player.delta < 0 ? "round-loser" : ""}" data-pos="${pos}" data-seat="${player.seat}">${bubble && bubble.expiresAt > Date.now() ? `<div class="niu-bubble">${escapeHTML(bubble.text)}</div>` : ""}<div class="niu-seat-cards">${cards}</div><div class="niu-avatar">${escapeHTML(player.name[0] || "牛")}${selecting ? '<i class="floating-banker">庄</i>' : ""}</div><div class="niu-seat-box"><div class="niu-seat-name"><span>${escapeHTML(player.name)}</span>${player.id === state.bankerId ? '<i class="banker-tag">庄</i>' : ""}${player.rejoinCount ? `<i class="rebuy-tag">重坐×${player.rejoinCount}</i>` : ""}</div><div class="niu-seat-points">◆ ${player.points.toLocaleString()}${player.delta ? ` · ${player.delta > 0 ? "+" : ""}${player.delta}` : ""}</div>${handBadge}<div class="niu-seat-status">${escapeHTML(statusText)}</div></div></div>`;
   }).join("");
 }
 
 function renderOwnCards(player) {
-  $("#niu-own-cards").innerHTML = (player?.cards || []).map(cardHTML).join("");
+  const dealing = state.phase === "deal" || state.phase === "fifth_deal";
+  $("#niu-own-cards").innerHTML = (player?.cards || []).map((card, index, cards) => cardHTML(card, dealing && index === cards.length - 1)).join("");
   $("#niu-hand-name").textContent = player?.hand ? `${player.hand.name} ×${player.hand.multiplier}` : player?.cardCount === 4 ? "已看四张" : "等待发牌";
 }
 
@@ -183,13 +197,44 @@ function renderAdmin() {
   $("#niu-admin-list").innerHTML = state.players.map((player) => `<div class="admin-player-row" data-player-id="${player.id}"><strong>${escapeHTML(player.name)}${player.id === me ? "（你）" : ""}</strong><input data-niu-points type="number" min="0" value="${player.points}" /><button data-niu-kick ${player.id === me ? "disabled" : ""}>${player.id === me ? "房主" : "剔除"}</button></div>`).join("");
 }
 
-function cardHTML(card) {
-  if (!card) return '<div class="niu-card back"></div>';
+function cardHTML(card, dealing = false) {
+  if (!card) return `<div class="niu-card back ${dealing ? "dealing" : ""}"></div>`;
   const red = card.suit === "h" || card.suit === "d";
-  return `<div class="niu-card ${red ? "red" : ""}">${card.rank === "T" ? "10" : card.rank}<small>${({ s: "♠", h: "♥", d: "♦", c: "♣" })[card.suit]}</small></div>`;
+  return `<div class="niu-card ${red ? "red" : ""} ${dealing ? "dealing" : ""}">${card.rank === "T" ? "10" : card.rank}<small>${({ s: "♠", h: "♥", d: "♦", c: "♣" })[card.suit]}</small></div>`;
 }
-function phaseName(phase) { return ({ waiting: "等待", bid: "抢庄", bet: "下注", reveal: "亮牌", result: "结算" })[phase] || phase; }
-function phasePrompt(phase) { return ({ waiting: "等待房主开始", bid: "看四张 · 开始抢庄", bet: "庄家已定 · 闲家下注", reveal: "第五张已发 · 自动拼牌", result: "本局结算完成" })[phase] || "等待"; }
+function phaseName(phase) { return ({ waiting: "等待", deal: "发四张", bid: "抢庄", banker_select: "随机定庄", bet: "下注", fifth_deal: "发第五张", reveal: "亮牌", result: "结算" })[phase] || phase; }
+function phasePrompt(phase) { return ({ waiting: "等待房主开始", deal: "正在一张张发出四张牌", bid: "看四张 · 开始抢庄", banker_select: "同倍抢庄 · 随机定庄中", bet: "庄家已定 · 闲家下注", fifth_deal: "正在翻开第 5 张牌", reveal: "第五张已发 · 自动拼牌", result: "本局结算完成" })[phase] || "等待"; }
+
+function updateMarquee() {
+  const active = state?.phase === "banker_select" && state.bankerCandidates?.length;
+  if (!active) {
+    clearInterval(marqueeTimer);
+    marqueeTimer = null;
+    marqueePlayerId = null;
+    return;
+  }
+  if (marqueeTimer) return;
+  let index = 0;
+  marqueePlayerId = state.bankerCandidates[0];
+  marqueeTimer = setInterval(() => {
+    if (state?.phase !== "banker_select") return updateMarquee();
+    marqueePlayerId = state.bankerCandidates[index++ % state.bankerCandidates.length];
+    renderSeats();
+  }, 170);
+}
+
+function updatePhaseTimer() {
+  const timer = $("#niu-phase-timer");
+  if (!state?.phaseDeadline || state.paused || !["bid", "bet"].includes(state.phase)) return timer.classList.add("hidden");
+  const total = state.settings.decisionTimeSeconds || 30;
+  const remaining = Math.max(0, Math.ceil((state.phaseDeadline - (Date.now() + serverClockOffset)) / 1000));
+  timer.querySelector("span").textContent = state.phase === "bid" ? "抢庄剩余" : "下注剩余";
+  timer.querySelector("strong").textContent = remaining;
+  timer.style.setProperty("--progress", `${Math.max(0, Math.min(100, remaining / total * 100))}%`);
+  timer.classList.toggle("warning", remaining <= 10);
+  timer.classList.remove("hidden");
+}
+setInterval(updatePhaseTimer, 250);
 
 $$('[data-niu-bid]').forEach((button) => button.addEventListener("click", async () => { const response = await emit("niu:bid", { multiplier: button.dataset.niuBid }); if (!response.ok) toast(response.error); }));
 $$('[data-niu-bet]').forEach((button) => button.addEventListener("click", async () => { const response = await emit("niu:bet", { multiplier: button.dataset.niuBet }); if (!response.ok) toast(response.error); }));
@@ -198,6 +243,9 @@ $("#niu-reseat").addEventListener("click", () => openSeatModal(true));
 $("#niu-away").addEventListener("click", async () => { const player = state.players.find((candidate) => candidate.id === me); if (!player) return; const response = await emit("niu:away", { away: !player.away }); if (!response.ok) toast(response.error); });
 $("#niu-mobile-away").addEventListener("click", () => $("#niu-away").click());
 $("#niu-pause").addEventListener("click", async () => { const response = await emit("niu:pause", { paused: !state.paused }); if (!response.ok) toast(response.error); });
+async function toggleAutoStart() { const response = await emit("niu:auto-start", { enabled: !state.settings.autoStartNextRound }); if (!response.ok) toast(response.error); }
+$("#niu-auto-start").addEventListener("click", toggleAutoStart);
+$("#niu-admin-auto").addEventListener("click", toggleAutoStart);
 
 $("#niu-chat-form").addEventListener("submit", async (event) => { event.preventDefault(); const input = $("#niu-chat-input"); const response = await emit("niu:chat", { text: input.value }); if (response.ok) input.value = ""; else toast(response.error); });
 function switchTab(tab) { $$('[data-niu-tab]').forEach((button) => button.classList.toggle("active", button.dataset.niuTab === tab)); ["chat", "players", "activity"].forEach((name) => $(`#niu-${name}-pane`).classList.toggle("hidden", name !== tab)); }

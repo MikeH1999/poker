@@ -1,7 +1,7 @@
 import { io } from "socket.io-client";
 import assert from "node:assert/strict";
 
-const url = "http://localhost:3000";
+const url = process.env.TEST_URL || "http://localhost:3000";
 const host = io(url);
 const guest = io(url);
 const late = io(url);

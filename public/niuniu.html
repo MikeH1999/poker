@@ -32,6 +32,7 @@
           <label>起始积分<input id="niu-starting-points" type="number" min="100" max="100000" value="1000" /></label>
           <label>房间底注<input id="niu-base-score" type="number" min="1" max="10000" value="10" /></label>
           <label>人数上限<input id="niu-max-players" type="number" min="2" max="6" value="6" /></label>
+          <label>选择时间（秒）<input id="niu-decision-time" type="number" min="5" max="120" value="30" /></label>
         </div>
         <button class="primary-button" type="submit">创建私人房间 <b>→</b></button>
         <p>纯娱乐积分，无充值、提现或现金价值。</p>
@@ -46,6 +47,7 @@
       <div class="toolbar-actions">
         <button id="niu-away" class="outline-button">暂时离座</button>
         <button id="niu-pause" class="outline-button host-only hidden">暂停</button>
+        <button id="niu-auto-start" class="outline-button host-only hidden">自动下一局：关</button>
         <button id="niu-manage" class="outline-button host-only hidden">玩家管理</button>
         <button id="niu-copy" class="outline-button">复制邀请链接</button>
       </div>
@@ -61,11 +63,11 @@
             <strong id="niu-phase">等待房主开始</strong>
             <span id="niu-banker-info">先发四张 · 再抢庄</span>
           </div>
-          <div id="niu-result" class="niu-result hidden"></div>
         </div>
         <div class="niu-action-panel">
           <div class="own-hand"><span>你的牌</span><div id="niu-own-cards" class="niu-own-cards"></div><strong id="niu-hand-name">等待发牌</strong></div>
           <div id="niu-action-message" class="niu-action-message">等待房主开始</div>
+          <div id="niu-phase-timer" class="niu-phase-timer hidden"><span>选择时间</span><strong>30</strong><i></i></div>
           <div id="niu-bid-actions" class="niu-actions hidden">
             <span>选择抢庄倍数</span>
             <div><button data-niu-bid="0">不抢</button><button data-niu-bid="1">1倍</button><button data-niu-bid="2">2倍</button><button data-niu-bid="3">3倍</button><button data-niu-bid="4">4倍</button></div>
@@ -99,7 +101,7 @@
 
   <div id="niu-rules" class="niu-modal hidden"><section class="niu-modal-card rules-card"><button id="close-rules" class="modal-close">×</button><p>HOW TO PLAY</p><h2>看四张抢庄牛牛规则</h2><ol><li><b>发牌：</b>每人先看到自己的 4 张牌，然后选择不抢或 1–4 倍抢庄。</li><li><b>定庄：</b>最高抢庄倍数者坐庄；最高倍数相同时随机选择庄家。</li><li><b>下注：</b>闲家选择 1/2/3/5/10/15 倍，随后发第 5 张牌并自动拼牌。</li><li><b>牌型：</b>任意三张点数和为 10 的倍数，余下两张之和个位即牛几；10/J/Q/K 算 10 点。</li><li><b>大小：</b>五小牛 ＞ 炸弹牛 ＞ 五花牛 ＞ 牛牛 ＞ 牛九…牛一 ＞ 无牛。</li><li><b>倍率：</b>牛一至牛六/无牛 ×1，牛七至牛九 ×2，牛牛 ×3，五花牛 ×4，炸弹牛 ×5，五小牛 ×6。</li><li><b>结算：</b>底注 × 胜方牌型倍数 × 抢庄倍数 × 闲家下注倍数。每人单局输赢不超过本局带入积分，庄家资金不足时按理论输赢比例赔付。</li></ol></section></div>
 
-  <div id="niu-admin" class="niu-modal hidden"><section class="niu-modal-card admin-card"><button id="close-niu-admin" class="modal-close">×</button><p>ROOM OWNER</p><h2>牛牛玩家管理</h2><div id="niu-admin-list"></div></section></div>
+  <div id="niu-admin" class="niu-modal hidden"><section class="niu-modal-card admin-card"><button id="close-niu-admin" class="modal-close">×</button><p>ROOM OWNER</p><h2>牛牛玩家管理</h2><button id="niu-admin-auto" class="outline-button admin-auto">自动下一局：关</button><div id="niu-admin-list"></div></section></div>
   <div id="niu-toast" class="niu-toast"></div>
   <script src="/socket.io/socket.io.js"></script>
   <script type="module" src="/niuniu.js"></script>

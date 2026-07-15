@@ -4,6 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Server } from "socket.io";
+import { evaluateZjhHand, compareZjhCards } from "./game/zjh-rules.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -17,11 +18,14 @@ app.get("/holdem", (_req, res) => res.sendFile(join(__dirname, "public", "index.
 app.get("/room/:id", (_req, res) => res.sendFile(join(__dirname, "public", "index.html")));
 app.get("/niuniu", (_req, res) => res.sendFile(join(__dirname, "public", "niuniu.html")));
 app.get("/niuniu/:id", (_req, res) => res.sendFile(join(__dirname, "public", "niuniu.html")));
+app.get("/zjh", (_req, res) => res.sendFile(join(__dirname, "public", "zjh.html")));
+app.get("/zjh/:id", (_req, res) => res.sendFile(join(__dirname, "public", "zjh.html")));
 app.use(express.static(join(__dirname, "public")));
-app.get("/health", (_req, res) => res.json({ ok: true, rooms: rooms.size, holdemRooms: rooms.size, niuniuRooms: niuRooms.size }));
+app.get("/health", (_req, res) => res.json({ ok: true, rooms: rooms.size, holdemRooms: rooms.size, niuniuRooms: niuRooms.size, zjhRooms: zjhRooms.size }));
 
 const rooms = new Map();
 const niuRooms = new Map();
+const zjhRooms = new Map();
 const suits = ["s", "h", "d", "c"];
 const ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"];
 
@@ -896,12 +900,22 @@ function createNiuRoom(ownerName, settings = {}) {
     roundNumber: 0,
     bankerId: null,
     bankerBid: 1,
+    bankerCandidates: [],
+    bankerSelectionEndsAt: null,
+    pendingBankerId: null,
+    phaseDeadline: null,
+    phaseTimer: null,
+    dealTimer: null,
+    nextRoundAt: null,
+    autoStartTimer: null,
     deck: [],
     result: null,
     settings: {
       startingPoints: clamp(settings.startingPoints, 100, 100000, 1000),
       baseScore: clamp(settings.baseScore, 1, 10000, 10),
       maxPlayers: clamp(settings.maxPlayers, 2, 6, 6),
+      decisionTimeSeconds: clamp(settings.decisionTimeSeconds, 5, 120, 30),
+      autoStartNextRound: Boolean(settings.autoStartNextRound),
     },
   };
   const player = addNiuPlayer(room, ownerName, room.settings.startingPoints, 0);
@@ -917,7 +931,7 @@ function addNiuPlayer(room, name, points, requestedSeat) {
   if (taken.has(seat)) throw new Error("该座位已被占用，请重新选择");
   const player = {
     id: randomUUID(), token: randomBytes(18).toString("base64url"), socketId: null,
-    name: cleanName(name), seat, points: clamp(points, 100, 100000, room.settings.startingPoints),
+    name: cleanName(name), seat, points: clamp(points, Math.max(1, room.settings.baseScore), 100000, Math.max(room.settings.startingPoints, room.settings.baseScore)),
     connected: true, seated: true, away: false, rejoinCount: 0,
     cards: [], bid: null, bet: null, hand: null, delta: 0, broughtPoints: 0,
     status: "等待中",
@@ -927,7 +941,7 @@ function addNiuPlayer(room, name, points, requestedSeat) {
 }
 
 function activeNiuPlayers(room) {
-  return room.players.filter((player) => player.seated && player.connected && !player.away && player.points > 0).sort((a, b) => a.seat - b.seat);
+  return room.players.filter((player) => player.seated && player.connected && !player.away && player.points >= room.settings.baseScore).sort((a, b) => a.seat - b.seat);
 }
 
 function niuMessage(room, text) {
@@ -940,6 +954,8 @@ function publicNiuState(room, viewerId) {
   return {
     id: room.id, hostId: room.hostId, phase: room.phase, paused: room.paused,
     roundNumber: room.roundNumber, bankerId: room.bankerId, bankerBid: room.bankerBid,
+    bankerCandidates: room.bankerCandidates, bankerSelectionEndsAt: room.bankerSelectionEndsAt,
+    phaseDeadline: room.phaseDeadline, nextRoundAt: room.nextRoundAt, serverTime: Date.now(),
     settings: room.settings, result: room.result,
     viewer: viewer ? { id: viewer.id, seated: viewer.seated, rejoinCount: viewer.rejoinCount, status: viewer.status } : null,
     players: room.players.filter((player) => player.seated).map((player) => ({
@@ -958,53 +974,179 @@ function broadcastNiu(room) {
   for (const player of room.players) if (player.socketId) io.to(player.socketId).emit("niu:state", publicNiuState(room, player.id));
 }
 
+function clearNiuPhaseTimer(room) {
+  if (room.phaseTimer) clearTimeout(room.phaseTimer);
+  room.phaseTimer = null;
+  room.phaseDeadline = null;
+}
+
+function armNiuPhaseTimer(room, phase) {
+  clearNiuPhaseTimer(room);
+  if (room.paused || room.phase !== phase || !["bid", "bet"].includes(phase)) return;
+  room.phaseDeadline = Date.now() + room.settings.decisionTimeSeconds * 1000;
+  room.phaseTimer = setTimeout(() => {
+    if (room.phase !== phase || room.paused) return;
+    if (phase === "bid") {
+      for (const player of room.players.filter((candidate) => candidate.cards.length === 4 && candidate.bid === null)) {
+        player.bid = 0;
+        player.status = "超时 · 不抢庄";
+      }
+      niuMessage(room, "抢庄时间结束，未选择玩家自动不抢");
+      progressNiuBids(room);
+    } else {
+      for (const player of room.players.filter((candidate) => candidate.cards.length === 4 && candidate.id !== room.bankerId && candidate.bet === null)) {
+        player.bet = 1;
+        player.status = "超时 · 下注 1 倍";
+      }
+      niuMessage(room, "下注时间结束，未选择闲家自动下注 1 倍");
+      progressNiuBets(room);
+    }
+    broadcastNiu(room);
+  }, room.settings.decisionTimeSeconds * 1000);
+}
+
+function clearNiuAutoStart(room) {
+  if (room.autoStartTimer) clearTimeout(room.autoStartTimer);
+  room.autoStartTimer = null;
+  room.nextRoundAt = null;
+}
+
+function scheduleNiuAutoStart(room) {
+  clearNiuAutoStart(room);
+  if (!room.settings.autoStartNextRound || room.paused || room.phase !== "result") return;
+  room.nextRoundAt = Date.now() + 5000;
+  niuMessage(room, "自动下一局已开启，5 秒后发四张");
+  room.autoStartTimer = setTimeout(() => {
+    room.autoStartTimer = null;
+    room.nextRoundAt = null;
+    if (!room.settings.autoStartNextRound || room.paused || room.phase !== "result") return;
+    try { startNiuRound(room); } catch (error) { niuMessage(room, `自动开局等待中：${error.message}`); }
+    broadcastNiu(room);
+  }, 5000);
+}
+
 function startNiuRound(room) {
+  clearNiuPhaseTimer(room);
+  clearNiuAutoStart(room);
+  if (room.dealTimer) clearTimeout(room.dealTimer);
   const players = activeNiuPlayers(room);
   if (players.length < 2) throw new Error("至少需要 2 位有积分的在线玩家");
   room.roundNumber += 1;
-  room.phase = "bid";
+  room.phase = "deal";
   room.bankerId = null;
   room.bankerBid = 1;
+  room.bankerCandidates = [];
+  room.bankerSelectionEndsAt = null;
+  room.pendingBankerId = null;
   room.result = null;
   room.deck = createDeck();
   for (const player of room.players) {
-    player.cards = players.includes(player) ? [room.deck.pop(), room.deck.pop(), room.deck.pop(), room.deck.pop()] : [];
+    player.cards = [];
     player.bid = null;
     player.bet = null;
     player.hand = null;
     player.delta = 0;
     player.broughtPoints = player.points;
-    player.status = players.includes(player) ? "请选择抢庄倍数" : player.seated ? "下一局加入" : "等待重新坐下";
+    player.status = players.includes(player) ? "发牌中 · 0/4" : player.seated ? "下一局加入" : "等待重新坐下";
   }
-  niuMessage(room, `第 ${room.roundNumber} 局开始，每人先看四张牌`);
+  niuMessage(room, `第 ${room.roundNumber} 局开始，依次发出四张牌`);
+  dealNiuInitialWave(room, players, 0);
+}
+
+function dealNiuInitialWave(room, players, wave) {
+  room.dealTimer = setTimeout(() => {
+    if (room.phase !== "deal") return;
+    if (room.paused) return dealNiuInitialWave(room, players, wave);
+    for (const player of players) {
+      player.cards.push(room.deck.pop());
+      player.status = `发牌中 · ${wave + 1}/4`;
+    }
+    niuMessage(room, `第 ${wave + 1} 张牌已发出`);
+    broadcastNiu(room);
+    if (wave < 3) return dealNiuInitialWave(room, players, wave + 1);
+    finishNiuInitialDeal(room, players);
+  }, 650);
+}
+
+function finishNiuInitialDeal(room, players) {
+  room.dealTimer = setTimeout(() => {
+    if (room.phase !== "deal") return;
+    if (room.paused) return finishNiuInitialDeal(room, players);
+    room.phase = "bid";
+    for (const player of players) {
+      if (!player.connected || player.away) { player.bid = 0; player.status = player.away ? "暂时离座" : "离线 · 自动不抢"; }
+      else player.status = "请选择抢庄倍数";
+    }
+    niuMessage(room, "四张牌发完，开始抢庄");
+    progressNiuBids(room);
+    if (room.phase === "bid") armNiuPhaseTimer(room, "bid");
+    broadcastNiu(room);
+  }, 500);
 }
 
 function progressNiuBids(room) {
   const players = room.players.filter((player) => player.cards.length === 4);
   if (!players.length || players.some((player) => player.bid === null)) return;
+  clearNiuPhaseTimer(room);
   const highest = Math.max(...players.map((player) => player.bid));
   const candidates = players.filter((player) => player.bid === highest);
-  const banker = candidates[Math.floor(Math.random() * candidates.length)];
+  if (candidates.length > 1) {
+    room.phase = "banker_select";
+    room.bankerCandidates = candidates.map((player) => player.id);
+    room.pendingBankerId = candidates[Math.floor(Math.random() * candidates.length)].id;
+    room.bankerSelectionEndsAt = Date.now() + 2400;
+    for (const player of players) player.status = candidates.includes(player) ? "候选庄家 · 随机选择中" : "等待定庄";
+    niuMessage(room, `${candidates.map((player) => player.name).join("、")} 同为最高 ${highest} 倍，开始随机定庄`);
+    setTimeout(() => finalizeNiuBanker(room, highest), 2400);
+    return;
+  }
+  room.pendingBankerId = candidates[0].id;
+  finalizeNiuBanker(room, highest);
+}
+
+function finalizeNiuBanker(room, highest) {
+  if (!["bid", "banker_select"].includes(room.phase) || !room.pendingBankerId) return;
+  if (room.paused) return setTimeout(() => finalizeNiuBanker(room, highest), 300);
+  const banker = room.players.find((player) => player.id === room.pendingBankerId);
+  if (!banker) return;
   room.bankerId = banker.id;
   room.bankerBid = Math.max(1, highest);
+  room.bankerCandidates = [];
+  room.bankerSelectionEndsAt = null;
+  room.pendingBankerId = null;
   room.phase = "bet";
-  for (const player of players) player.status = player.id === banker.id ? `庄家 · ${room.bankerBid} 倍` : "请选择下注倍数";
+  for (const player of room.players.filter((candidate) => candidate.cards.length === 4)) player.status = player.id === banker.id ? `庄家 · ${room.bankerBid} 倍` : "请选择下注倍数";
   niuMessage(room, `${banker.name} 成为庄家，抢庄 ${room.bankerBid} 倍`);
+  armNiuPhaseTimer(room, "bet");
+  broadcastNiu(room);
 }
 
 function progressNiuBets(room) {
   const players = room.players.filter((player) => player.cards.length === 4);
   const idlePlayers = players.filter((player) => player.id !== room.bankerId);
   if (idlePlayers.some((player) => player.bet === null)) return;
-  for (const player of players) {
-    player.cards.push(room.deck.pop());
-    player.hand = evaluateNiuHand(player.cards);
-    player.status = `${player.hand.name} · ${player.hand.multiplier}倍`;
-  }
-  room.phase = "reveal";
-  niuMessage(room, "下注完成，发出第 5 张牌并自动拼牌");
+  clearNiuPhaseTimer(room);
+  room.phase = "fifth_deal";
+  for (const player of players) player.status = "等待第 5 张牌";
+  niuMessage(room, "下注完成，准备发出第 5 张牌");
   broadcastNiu(room);
-  setTimeout(() => settleNiuWhenReady(room), 1600);
+  dealNiuFifthCard(room, players);
+}
+
+function dealNiuFifthCard(room, players) {
+  room.dealTimer = setTimeout(() => {
+    if (room.phase !== "fifth_deal") return;
+    if (room.paused) return dealNiuFifthCard(room, players);
+    for (const player of players) {
+      player.cards.push(room.deck.pop());
+      player.hand = evaluateNiuHand(player.cards);
+      player.status = `${player.hand.name} · ${player.hand.multiplier}倍`;
+    }
+    room.phase = "reveal";
+    niuMessage(room, "第 5 张牌已翻开，自动完成拼牌");
+    broadcastNiu(room);
+    setTimeout(() => settleNiuWhenReady(room), 1800);
+  }, 750);
 }
 
 function settleNiuWhenReady(room) {
@@ -1085,8 +1227,9 @@ function settleNiuRound(room) {
   niuMessage(room, room.result.text);
   for (const player of room.players) {
     player.status = player.delta > 0 ? `赢得 ${player.delta}` : player.delta < 0 ? `输掉 ${Math.abs(player.delta)}` : "本局和局";
-    if (player.seated && player.points <= 0) unseatNiuPlayer(room, player);
+    if (player.seated && player.points < room.settings.baseScore) unseatNiuPlayer(room, player);
   }
+  scheduleNiuAutoStart(room);
 }
 
 function unseatNiuPlayer(room, player) {
@@ -1094,8 +1237,8 @@ function unseatNiuPlayer(room, player) {
   player.seated = false;
   player.seat = null;
   player.away = false;
-  player.status = "积分耗尽，等待重新坐下";
-  niuMessage(room, `${player.name} 积分耗尽，座位已释放`);
+  player.status = `积分不足底注 ${room.settings.baseScore}，等待重新坐下`;
+  niuMessage(room, `${player.name} 积分低于底注 ${room.settings.baseScore}，座位已释放`);
 }
 
 function reseatNiuPlayer(room, player, { name, points, seat }) {
@@ -1105,9 +1248,9 @@ function reseatNiuPlayer(room, player, { name, points, seat }) {
   if (room.players.some((candidate) => candidate.seated && candidate.seat === numericSeat)) throw new Error("该座位已被占用，请重新选择");
   Object.assign(player, {
     seated: true, seat: numericSeat, name: cleanName(name || player.name),
-    points: clamp(points, 100, 100000, room.settings.startingPoints), away: false,
+    points: clamp(points, Math.max(1, room.settings.baseScore), 100000, Math.max(room.settings.startingPoints, room.settings.baseScore)), away: false,
     cards: [], bid: null, bet: null, hand: null, delta: 0,
-    status: ["bid", "bet", "reveal"].includes(room.phase) ? "下一局加入" : "等待中",
+    status: ["deal", "bid", "banker_select", "bet", "fifth_deal", "reveal"].includes(room.phase) ? "下一局加入" : "等待中",
   });
   player.rejoinCount += 1;
   niuMessage(room, `${player.name} 第 ${player.rejoinCount} 次重新坐下`);
@@ -1141,7 +1284,7 @@ io.on("connection", (socket) => {
       reply({ ok: true, roomId: room.id, defaultPoints: room.settings.startingPoints, maxPlayers: room.settings.maxPlayers,
         remainingSlots: Math.max(0, room.settings.maxPlayers - seatedCount),
         occupiedSeats: room.players.filter((player) => player.seated).map((player) => ({ seat: player.seat, name: player.name })),
-        inProgress: ["bid", "bet", "reveal"].includes(room.phase) });
+        inProgress: ["deal", "bid", "banker_select", "bet", "fifth_deal", "reveal"].includes(room.phase) });
     } catch (error) { reply({ ok: false, error: error.message }); }
   });
 
@@ -1156,7 +1299,7 @@ io.on("connection", (socket) => {
       } else if (!player) {
         if (room.players.filter((candidate) => candidate.seated).length >= room.settings.maxPlayers) throw new Error("房间已满");
         player = addNiuPlayer(room, name, points, seat);
-        if (["bid", "bet", "reveal"].includes(room.phase)) player.status = "下一局加入";
+        if (["deal", "bid", "banker_select", "bet", "fifth_deal", "reveal"].includes(room.phase)) player.status = "下一局加入";
         niuMessage(room, `${player.name} 已入座${player.status === "下一局加入" ? "，将从下一局加入" : ""}`);
       }
       player.socketId = socket.id;
@@ -1187,6 +1330,7 @@ io.on("connection", (socket) => {
       if (room.paused || room.phase !== "bid" || player.cards.length !== 4 || player.bid !== null) throw new Error("当前不能抢庄");
       const value = Number(multiplier);
       if (![0, 1, 2, 3, 4].includes(value)) throw new Error("无效抢庄倍数");
+      if (value > 0 && player.points < room.settings.baseScore * value) throw new Error("积分不足，无法选择该抢庄倍数");
       player.bid = value;
       player.status = value ? `已抢庄 ${value} 倍` : "不抢庄";
       niuMessage(room, `${player.name} ${value ? `抢庄 ${value} 倍` : "不抢"}`);
@@ -1218,7 +1362,7 @@ io.on("connection", (socket) => {
       player.away = Boolean(away);
       if (player.away && room.phase === "bid" && player.cards.length === 4 && player.bid === null) { player.bid = 0; progressNiuBids(room); }
       if (player.away && room.phase === "bet" && player.id !== room.bankerId && player.cards.length === 4 && player.bet === null) { player.bet = 1; progressNiuBets(room); }
-      player.status = player.away ? "暂时离座" : ["bid", "bet", "reveal"].includes(room.phase) ? "下一局加入" : "等待中";
+      player.status = player.away ? "暂时离座" : ["deal", "bid", "banker_select", "bet", "fifth_deal", "reveal"].includes(room.phase) ? "下一局加入" : "等待中";
       niuMessage(room, `${player.name} ${player.away ? "暂时离座" : "回到牌桌"}`);
       broadcastNiu(room);
       reply({ ok: true });
@@ -1230,7 +1374,22 @@ io.on("connection", (socket) => {
       const { room, player } = identifyNiu(socket);
       if (room.hostId !== player.id) throw new Error("只有房主可以暂停");
       room.paused = Boolean(paused);
+      if (room.paused) { clearNiuPhaseTimer(room); clearNiuAutoStart(room); }
+      else if (["bid", "bet"].includes(room.phase)) armNiuPhaseTimer(room, room.phase);
+      else if (room.phase === "result") scheduleNiuAutoStart(room);
       niuMessage(room, `${player.name} ${room.paused ? "暂停" : "恢复"}了游戏`);
+      broadcastNiu(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("niu:auto-start", ({ enabled }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyNiu(socket);
+      if (room.hostId !== player.id) throw new Error("只有房主可以设置自动开局");
+      room.settings.autoStartNextRound = Boolean(enabled);
+      if (room.settings.autoStartNextRound) scheduleNiuAutoStart(room); else clearNiuAutoStart(room);
+      niuMessage(room, `${player.name} ${room.settings.autoStartNextRound ? "开启" : "关闭"}了自动下一局`);
       broadcastNiu(room);
       reply({ ok: true });
     } catch (error) { reply({ ok: false, error: error.message }); }
@@ -1245,7 +1404,7 @@ io.on("connection", (socket) => {
       if (!target) throw new Error("玩家不存在");
       target.points = clamp(points, 0, 10000000, target.points);
       niuMessage(room, `${player.name} 将 ${target.name} 的积分调整为 ${target.points}`);
-      if (target.points <= 0) unseatNiuPlayer(room, target);
+      if (target.points < room.settings.baseScore) unseatNiuPlayer(room, target);
       broadcastNiu(room);
       reply({ ok: true });
     } catch (error) { reply({ ok: false, error: error.message }); }
@@ -1291,6 +1450,519 @@ io.on("connection", (socket) => {
       if (!online.length) setTimeout(() => { if (!room.players.some((candidate) => candidate.connected)) niuRooms.delete(room.id); }, 30 * 60 * 1000);
       broadcastNiu(room);
     } catch { /* not in a niuniu room */ }
+  });
+});
+
+function createZjhRoom(ownerName, settings = {}) {
+  let id;
+  do id = roomId(); while (zjhRooms.has(id));
+  const room = {
+    id,
+    createdAt: Date.now(),
+    hostId: null,
+    players: [],
+    messages: [],
+    paused: false,
+    phase: "waiting",
+    handNumber: 0,
+    dealerId: null,
+    actionPlayerId: null,
+    bettingRound: 0,
+    currentUnit: 0,
+    pot: 0,
+    deck: [],
+    actedThisRound: new Set(),
+    actionDeadline: null,
+    actionTimer: null,
+    nextHandAt: null,
+    autoStartTimer: null,
+    result: null,
+    settings: {
+      startingPoints: clamp(settings.startingPoints, 100, 100000, 1000),
+      ante: clamp(settings.ante, 1, 10000, 10),
+      maxPlayers: clamp(settings.maxPlayers, 2, 5, 5),
+      decisionTimeSeconds: clamp(settings.decisionTimeSeconds, 5, 120, 30),
+      maxRounds: 15,
+      autoStartNextHand: Boolean(settings.autoStartNextHand),
+    },
+  };
+  const player = addZjhPlayer(room, ownerName, room.settings.startingPoints, 0);
+  room.hostId = player.id;
+  zjhRooms.set(id, room);
+  return { room, player };
+}
+
+function addZjhPlayer(room, name, points, requestedSeat) {
+  const taken = new Set(room.players.filter((player) => player.seated).map((player) => player.seat));
+  const seat = Number(requestedSeat);
+  if (!Number.isInteger(seat) || seat < 0 || seat >= room.settings.maxPlayers) throw new Error("请选择有效座位");
+  if (taken.has(seat)) throw new Error("该座位已被占用，请重新选择");
+  const player = {
+    id: randomUUID(), token: randomBytes(18).toString("base64url"), socketId: null,
+    name: cleanName(name), seat,
+    points: clamp(points, room.settings.ante, 100000, Math.max(room.settings.startingPoints, room.settings.ante)),
+    connected: true, seated: true, away: false, rejoinCount: 0,
+    cards: [], seen: false, folded: false, totalBet: 0, raisedRound: 0,
+    status: "等待中",
+  };
+  room.players.push(player);
+  return player;
+}
+
+function activeZjhPlayers(room) {
+  return room.players.filter((player) => player.seated && player.connected && !player.away && player.points >= room.settings.ante);
+}
+
+function zjhContenders(room) {
+  return room.players.filter((player) => player.cards.length === 3 && !player.folded);
+}
+
+function zjhCounterClockwise(room, players = zjhContenders(room)) {
+  return [...players].sort((a, b) => b.seat - a.seat);
+}
+
+function nextZjhPlayer(room, currentId, players = zjhContenders(room)) {
+  const ordered = zjhCounterClockwise(room, players);
+  if (!ordered.length) return null;
+  const current = room.players.find((player) => player.id === currentId);
+  if (!current) return ordered[0];
+  return ordered.find((player) => player.seat < current.seat) || ordered[0];
+}
+
+function zjhMessage(room, text) {
+  room.messages.push({ id: randomUUID(), type: "system", text, at: Date.now() });
+}
+
+function publicZjhState(room, viewerId) {
+  const viewer = room.players.find((player) => player.id === viewerId);
+  const revealAll = room.phase === "result";
+  const maxRoomChip = Math.max(room.settings.ante, ...room.players.filter((player) => player.seated).map((player) => player.points + player.totalBet));
+  return {
+    id: room.id, hostId: room.hostId, paused: room.paused, phase: room.phase,
+    handNumber: room.handNumber, dealerId: room.dealerId, actionPlayerId: room.actionPlayerId,
+    bettingRound: room.bettingRound, currentUnit: room.currentUnit, pot: room.pot,
+    actionDeadline: room.actionDeadline, nextHandAt: room.nextHandAt, serverTime: Date.now(),
+    maxRoomChip, settings: room.settings, result: room.result,
+    viewer: viewer ? { id: viewer.id, seated: viewer.seated, rejoinCount: viewer.rejoinCount, status: viewer.status } : null,
+    players: room.players.filter((player) => player.seated).map((player) => ({
+      id: player.id, name: player.name, seat: player.seat, points: player.points,
+      connected: player.connected, away: player.away, rejoinCount: player.rejoinCount,
+      seen: player.seen, folded: player.folded, totalBet: player.totalBet,
+      raisedThisRound: player.raisedRound === room.bettingRound, status: player.status,
+      cardCount: player.cards.length,
+      cards: player.id === viewerId || revealAll ? player.cards : [],
+      hand: revealAll && player.cards.length === 3 ? evaluateZjhHand(player.cards) : null,
+    })),
+    messages: room.messages.slice(-80),
+  };
+}
+
+function broadcastZjh(room) {
+  for (const player of room.players) if (player.socketId) io.to(player.socketId).emit("zjh:state", publicZjhState(room, player.id));
+}
+
+function clearZjhActionTimer(room) {
+  if (room.actionTimer) clearTimeout(room.actionTimer);
+  room.actionTimer = null;
+  room.actionDeadline = null;
+}
+
+function armZjhActionTimer(room) {
+  clearZjhActionTimer(room);
+  if (room.phase !== "playing" || room.paused || !room.actionPlayerId) return;
+  const playerId = room.actionPlayerId;
+  room.actionDeadline = Date.now() + room.settings.decisionTimeSeconds * 1000;
+  room.actionTimer = setTimeout(() => {
+    if (room.phase !== "playing" || room.paused || room.actionPlayerId !== playerId) return;
+    const player = room.players.find((candidate) => candidate.id === playerId);
+    if (!player || player.folded) return;
+    player.folded = true;
+    player.status = "超时 · 自动弃牌";
+    zjhMessage(room, `${player.name} 操作超时，自动弃牌`);
+    advanceZjhAction(room, player.id);
+    broadcastZjh(room);
+  }, room.settings.decisionTimeSeconds * 1000);
+}
+
+function setZjhActionPlayer(room, player) {
+  clearZjhActionTimer(room);
+  room.actionPlayerId = player?.id || null;
+  if (player) {
+    player.status = player.seen ? "轮到你 · 明牌" : "轮到你 · 暗牌";
+    armZjhActionTimer(room);
+  }
+}
+
+function takeZjhBet(room, player, amount) {
+  const value = Math.max(0, Math.round(Number(amount) || 0));
+  if (value > player.points) throw new Error("积分不足，请选择更低金额或弃牌");
+  player.points -= value;
+  player.totalBet += value;
+  room.pot += value;
+  return value;
+}
+
+function clearZjhAutoStart(room) {
+  if (room.autoStartTimer) clearTimeout(room.autoStartTimer);
+  room.autoStartTimer = null;
+  room.nextHandAt = null;
+}
+
+function scheduleZjhAutoStart(room) {
+  clearZjhAutoStart(room);
+  if (!room.settings.autoStartNextHand || room.paused || room.phase !== "result") return;
+  room.nextHandAt = Date.now() + 5000;
+  room.autoStartTimer = setTimeout(() => {
+    room.autoStartTimer = null;
+    room.nextHandAt = null;
+    if (!room.settings.autoStartNextHand || room.paused || room.phase !== "result") return;
+    try { startZjhHand(room); } catch (error) { zjhMessage(room, `自动开局等待中：${error.message}`); }
+    broadcastZjh(room);
+  }, 5000);
+}
+
+function unseatZjhPlayer(room, player) {
+  if (!player.seated) return;
+  player.seated = false;
+  player.seat = null;
+  player.away = false;
+  player.status = `积分不足底注 ${room.settings.ante}，等待重新坐下`;
+  zjhMessage(room, `${player.name} 积分低于底注 ${room.settings.ante}，座位已释放`);
+}
+
+function startZjhHand(room) {
+  clearZjhActionTimer(room);
+  clearZjhAutoStart(room);
+  for (const player of room.players) if (player.seated && player.points < room.settings.ante) unseatZjhPlayer(room, player);
+  const players = activeZjhPlayers(room);
+  if (players.length < 2) throw new Error("至少需要 2 位有足够积分的在线玩家");
+  room.phase = "playing";
+  room.handNumber += 1;
+  room.bettingRound = 1;
+  room.currentUnit = room.settings.ante;
+  room.pot = 0;
+  room.result = null;
+  room.deck = createDeck();
+  room.actedThisRound = new Set();
+  const dealer = players[Math.floor(Math.random() * players.length)];
+  room.dealerId = dealer.id;
+  const dealOrder = zjhCounterClockwise(room, players);
+  const dealerIndex = dealOrder.findIndex((player) => player.id === dealer.id);
+  const ordered = [...dealOrder.slice(dealerIndex), ...dealOrder.slice(0, dealerIndex)];
+  for (const player of room.players) {
+    player.cards = [];
+    player.seen = false;
+    player.folded = !players.includes(player);
+    player.totalBet = 0;
+    player.raisedRound = 0;
+    player.status = players.includes(player) ? "暗牌 · 等待行动" : player.away ? "暂时离座" : "下一局加入";
+  }
+  for (const player of players) takeZjhBet(room, player, room.settings.ante);
+  for (let wave = 0; wave < 3; wave += 1) for (const player of ordered) player.cards.push(room.deck.pop());
+  zjhMessage(room, `第 ${room.handNumber} 局开始，${dealer.name} 随机坐庄，每人支付底注 ${room.settings.ante}`);
+  setZjhActionPlayer(room, nextZjhPlayer(room, dealer.id, players));
+}
+
+function zjhCallCost(room, player) {
+  return room.currentUnit * (player.seen ? 2 : 1);
+}
+
+function advanceZjhAction(room, actorId) {
+  if (room.phase !== "playing") return;
+  const contenders = zjhContenders(room);
+  if (contenders.length <= 1) return finishZjhHand(room, contenders[0]);
+  room.actedThisRound.add(actorId);
+  if (contenders.every((player) => room.actedThisRound.has(player.id))) {
+    if (room.bettingRound >= room.settings.maxRounds) return forceZjhShowdown(room);
+    room.bettingRound += 1;
+    room.actedThisRound = new Set();
+    for (const player of contenders) player.status = player.seen ? "明牌 · 等待行动" : "暗牌 · 等待行动";
+    zjhMessage(room, `进入第 ${room.bettingRound} 轮下注`);
+  }
+  setZjhActionPlayer(room, nextZjhPlayer(room, actorId));
+}
+
+function forceZjhShowdown(room) {
+  const contenders = zjhContenders(room);
+  const ordered = zjhCounterClockwise(room, contenders);
+  const first = nextZjhPlayer(room, room.dealerId, contenders);
+  const start = ordered.findIndex((player) => player.id === first?.id);
+  const sequence = [...ordered.slice(start), ...ordered.slice(0, start)];
+  let champion = sequence[0];
+  for (const challenger of sequence.slice(1)) {
+    const score = compareZjhCards(champion.cards, challenger.cards);
+    if (score <= 0) { champion.folded = true; champion.status = `强制比牌负于 ${challenger.name}`; champion = challenger; }
+    else { challenger.folded = true; challenger.status = `强制比牌负于 ${champion.name}`; }
+  }
+  zjhMessage(room, `达到 ${room.settings.maxRounds} 轮上限，系统依次强制比牌`);
+  finishZjhHand(room, champion);
+}
+
+function finishZjhHand(room, winner) {
+  clearZjhActionTimer(room);
+  room.phase = "result";
+  room.actionPlayerId = null;
+  if (winner) {
+    const award = room.pot;
+    winner.points += award;
+    winner.status = `本局获胜 · +${award}`;
+    room.result = { winnerId: winner.id, text: `${winner.name} 赢得底池 ${award}` };
+    zjhMessage(room, room.result.text);
+  } else {
+    room.result = { winnerId: null, text: "本局结束" };
+  }
+  for (const player of room.players) {
+    if (player.cards.length !== 3 || player.id === winner?.id) continue;
+    if (!player.folded) player.status = "等待下一局";
+    if (player.points < room.settings.ante) player.status = `积分不足底注 ${room.settings.ante} · 下一局离桌`;
+  }
+  scheduleZjhAutoStart(room);
+}
+
+function reseatZjhPlayer(room, player, { name, points, seat }) {
+  if (room.players.filter((candidate) => candidate.seated).length >= room.settings.maxPlayers) throw new Error("房间已满");
+  const numericSeat = Number(seat);
+  if (!Number.isInteger(numericSeat) || numericSeat < 0 || numericSeat >= room.settings.maxPlayers) throw new Error("请选择有效座位");
+  if (room.players.some((candidate) => candidate.seated && candidate.seat === numericSeat)) throw new Error("该座位已被占用，请重新选择");
+  Object.assign(player, {
+    seated: true, seat: numericSeat, name: cleanName(name || player.name),
+    points: clamp(points, room.settings.ante, 100000, Math.max(room.settings.startingPoints, room.settings.ante)),
+    away: false, cards: [], seen: false, folded: room.phase === "playing", totalBet: 0,
+    status: room.phase === "playing" ? "下一局加入" : "等待中",
+  });
+  player.rejoinCount += 1;
+  zjhMessage(room, `${player.name} 第 ${player.rejoinCount} 次重新坐下`);
+}
+
+function identifyZjh(socket) {
+  const room = zjhRooms.get(socket.data?.zjhRoomId);
+  const player = room?.players.find((candidate) => candidate.id === socket.data?.zjhPlayerId);
+  if (!room || !player) throw new Error("请先加入炸金花房间");
+  return { room, player };
+}
+
+io.on("connection", (socket) => {
+  socket.on("zjh:create", ({ name, settings }, reply = () => {}) => {
+    try {
+      const { room, player } = createZjhRoom(name, settings);
+      player.socketId = socket.id;
+      socket.data.zjhRoomId = room.id;
+      socket.data.zjhPlayerId = player.id;
+      socket.join(`zjh:${room.id}`);
+      zjhMessage(room, `${player.name} 创建了炸金花房间`);
+      broadcastZjh(room);
+      reply({ ok: true, roomId: room.id, playerId: player.id, token: player.token });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("zjh:preview", ({ roomId: rawId }, reply = () => {}) => {
+    try {
+      const room = zjhRooms.get(String(rawId || "").toUpperCase());
+      if (!room) throw new Error("房间不存在或已结束");
+      const seated = room.players.filter((player) => player.seated);
+      reply({ ok: true, roomId: room.id, defaultPoints: room.settings.startingPoints, ante: room.settings.ante,
+        maxPlayers: room.settings.maxPlayers, remainingSlots: Math.max(0, room.settings.maxPlayers - seated.length),
+        occupiedSeats: seated.map((player) => ({ seat: player.seat, name: player.name })), inProgress: room.phase === "playing" });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("zjh:join", ({ roomId: rawId, name, points, seat, token }, reply = () => {}) => {
+    try {
+      const room = zjhRooms.get(String(rawId || "").toUpperCase());
+      if (!room) throw new Error("房间不存在或已结束");
+      let player = room.players.find((candidate) => candidate.token === token);
+      if (player && !player.seated) reseatZjhPlayer(room, player, { name, points, seat });
+      else if (!player) {
+        if (room.players.filter((candidate) => candidate.seated).length >= room.settings.maxPlayers) throw new Error("房间已满");
+        player = addZjhPlayer(room, name, points, seat);
+        if (room.phase === "playing") { player.folded = true; player.status = "下一局加入"; }
+        zjhMessage(room, `${player.name} 已入座${room.phase === "playing" ? "，将从下一局加入" : ""}`);
+      }
+      player.socketId = socket.id;
+      player.connected = true;
+      socket.data.zjhRoomId = room.id;
+      socket.data.zjhPlayerId = player.id;
+      socket.join(`zjh:${room.id}`);
+      broadcastZjh(room);
+      reply({ ok: true, roomId: room.id, playerId: player.id, token: player.token, rejoinCount: player.rejoinCount });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("zjh:start", (_, reply = () => {}) => {
+    try {
+      const { room, player } = identifyZjh(socket);
+      if (room.hostId !== player.id) throw new Error("只有房主可以开始");
+      if (room.paused) throw new Error("牌桌已暂停");
+      if (!['waiting', 'result'].includes(room.phase)) throw new Error("本局尚未结束");
+      startZjhHand(room);
+      broadcastZjh(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("zjh:look", (_, reply = () => {}) => {
+    try {
+      const { room, player } = identifyZjh(socket);
+      if (room.phase !== "playing" || player.folded || player.cards.length !== 3) throw new Error("当前不能看牌");
+      if (!player.seen) {
+        player.seen = true;
+        player.status = room.actionPlayerId === player.id ? "轮到你 · 明牌" : "已看牌 · 等待行动";
+        zjhMessage(room, `${player.name} 选择了看牌`);
+        broadcastZjh(room);
+      }
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("zjh:action", ({ action, amount, targetId }, reply = () => {}) => {
+    let actingRoom = null;
+    try {
+      const { room, player } = identifyZjh(socket);
+      if (room.phase !== "playing" || room.paused || room.actionPlayerId !== player.id || player.folded) throw new Error("还没轮到你");
+      actingRoom = room;
+      clearZjhActionTimer(room);
+      if (action === "fold") {
+        player.folded = true;
+        player.status = "已弃牌";
+        zjhMessage(room, `${player.name} 弃牌`);
+      } else if (action === "call") {
+        const paid = takeZjhBet(room, player, zjhCallCost(room, player));
+        player.status = `${player.seen ? "明牌" : "暗牌"} · 跟注 ${paid}`;
+        zjhMessage(room, `${player.name} ${player.seen ? "明牌" : "暗牌"}跟注 ${paid}`);
+      } else if (action === "raise") {
+        if (player.raisedRound === room.bettingRound) throw new Error("每轮只能加注一次");
+        const target = Math.round(Number(amount));
+        const maxRoomChip = Math.max(room.settings.ante, ...room.players.filter((candidate) => candidate.seated).map((candidate) => candidate.points + candidate.totalBet));
+        if (!Number.isFinite(target) || target <= room.currentUnit) throw new Error("加注金额必须高于当前注");
+        if (target > maxRoomChip) throw new Error("加注不能超过房间最大筹码");
+        const paid = takeZjhBet(room, player, target * (player.seen ? 2 : 1));
+        room.currentUnit = target;
+        room.actedThisRound = new Set();
+        player.raisedRound = room.bettingRound;
+        player.status = `${player.seen ? "明牌" : "暗牌"} · 加注 ${paid}`;
+        zjhMessage(room, `${player.name} 加注，暗注基准升至 ${target}`);
+      } else if (action === "compare") {
+        if (room.bettingRound < 2) throw new Error("第二轮开始才可以比牌");
+        const target = zjhContenders(room).find((candidate) => candidate.id === targetId && candidate.id !== player.id);
+        if (!target) throw new Error("请选择仍在局中的比牌对象");
+        const paid = takeZjhBet(room, player, zjhCallCost(room, player) * 2);
+        const score = compareZjhCards(player.cards, target.cards);
+        const loser = score > 0 ? target : player;
+        loser.folded = true;
+        loser.status = `比牌负于 ${loser.id === player.id ? target.name : player.name}`;
+        player.status = loser.id === player.id ? `比牌失败 · 支付 ${paid}` : `比牌获胜 · 支付 ${paid}`;
+        zjhMessage(room, `${player.name} 与 ${target.name} 比牌，${loser.name} 失利`);
+      } else throw new Error("未知操作");
+      advanceZjhAction(room, player.id);
+      broadcastZjh(room);
+      reply({ ok: true });
+    } catch (error) {
+      if (actingRoom?.phase === "playing" && actingRoom.actionPlayerId) armZjhActionTimer(actingRoom);
+      reply({ ok: false, error: error.message });
+    }
+  });
+
+  socket.on("zjh:away", ({ away }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyZjh(socket);
+      player.away = Boolean(away);
+      if (player.away && room.phase === "playing" && !player.folded && player.cards.length === 3) {
+        player.folded = true;
+        if (room.actionPlayerId === player.id) advanceZjhAction(room, player.id);
+        else if (zjhContenders(room).length <= 1) finishZjhHand(room, zjhContenders(room)[0]);
+      }
+      player.status = player.away ? "暂时离座" : room.phase === "playing" ? "下一局加入" : "等待中";
+      zjhMessage(room, `${player.name} ${player.away ? "暂时离座" : "回到牌桌"}`);
+      broadcastZjh(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("zjh:pause", ({ paused }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyZjh(socket);
+      if (room.hostId !== player.id) throw new Error("只有房主可以暂停");
+      room.paused = Boolean(paused);
+      if (room.paused) { clearZjhActionTimer(room); clearZjhAutoStart(room); }
+      else if (room.phase === "playing") armZjhActionTimer(room);
+      else if (room.phase === "result") scheduleZjhAutoStart(room);
+      zjhMessage(room, `${player.name} ${room.paused ? "暂停" : "恢复"}了游戏`);
+      broadcastZjh(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("zjh:auto-start", ({ enabled }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyZjh(socket);
+      if (room.hostId !== player.id) throw new Error("只有房主可以设置自动开局");
+      room.settings.autoStartNextHand = Boolean(enabled);
+      if (room.settings.autoStartNextHand) scheduleZjhAutoStart(room); else clearZjhAutoStart(room);
+      zjhMessage(room, `${player.name} ${room.settings.autoStartNextHand ? "开启" : "关闭"}了自动下一局`);
+      broadcastZjh(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("zjh:host-points", ({ playerId, points }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyZjh(socket);
+      if (room.hostId !== player.id) throw new Error("只有房主可以修改积分");
+      if (!['waiting', 'result'].includes(room.phase)) throw new Error("请在两局之间修改积分");
+      const target = room.players.find((candidate) => candidate.id === playerId && candidate.seated);
+      if (!target) throw new Error("玩家不存在");
+      target.points = clamp(points, 0, 10000000, target.points);
+      zjhMessage(room, `${player.name} 将 ${target.name} 的积分调整为 ${target.points}`);
+      if (target.points < room.settings.ante) unseatZjhPlayer(room, target);
+      broadcastZjh(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("zjh:kick", ({ playerId }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyZjh(socket);
+      if (room.hostId !== player.id) throw new Error("只有房主可以剔除玩家");
+      if (!['waiting', 'result'].includes(room.phase)) throw new Error("请在两局之间剔除玩家");
+      if (playerId === player.id) throw new Error("房主不能剔除自己");
+      const index = room.players.findIndex((candidate) => candidate.id === playerId);
+      if (index < 0) throw new Error("玩家不存在");
+      const [target] = room.players.splice(index, 1);
+      if (target.socketId) io.to(target.socketId).emit("zjh:kicked", { message: "你已被房主移出炸金花房间" });
+      zjhMessage(room, `${target.name} 已被移出房间`);
+      broadcastZjh(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("zjh:chat", ({ text }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyZjh(socket);
+      const message = String(text || "").trim().slice(0, 160);
+      if (!message) throw new Error("消息不能为空");
+      room.messages.push({ id: randomUUID(), type: "chat", name: player.name, text: message, at: Date.now() });
+      broadcastZjh(room);
+      io.to(`zjh:${room.id}`).emit("zjh:chat-bubble", { playerId: player.id, text: message, expiresAt: Date.now() + 6000 });
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("disconnect", () => {
+    try {
+      const { room, player } = identifyZjh(socket);
+      player.connected = false;
+      player.socketId = null;
+      if (room.phase === "playing" && !player.folded && player.cards.length === 3) {
+        player.folded = true;
+        player.status = "离线 · 自动弃牌";
+        if (room.actionPlayerId === player.id) advanceZjhAction(room, player.id);
+        else if (zjhContenders(room).length <= 1) finishZjhHand(room, zjhContenders(room)[0]);
+      }
+      const online = room.players.filter((candidate) => candidate.connected);
+      if (room.hostId === player.id && online.length) room.hostId = online[0].id;
+      if (!online.length) setTimeout(() => { if (!room.players.some((candidate) => candidate.connected)) zjhRooms.delete(room.id); }, 30 * 60 * 1000);
+      broadcastZjh(room);
+    } catch { /* not in a zjh room */ }
   });
 });
 

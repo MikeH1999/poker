@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#171816" />
+  <title>炸金花 · River Club</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;900&family=Noto+Sans+SC:wght@400;600;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/niuniu.css" />
+  <link rel="stylesheet" href="/zjh.css" />
+</head>
+<body>
+  <header class="niu-header">
+    <a class="niu-brand" href="/"><span>R</span><div>RIVER <b>CLUB</b><small>GAME COLLECTION</small></div></a>
+    <div class="niu-title">炸金花</div>
+    <button id="zjh-rules-button" class="outline-button">游戏规则</button>
+  </header>
+
+  <main id="zjh-lobby" class="niu-lobby zjh-lobby">
+    <section class="niu-hero">
+      <div class="hero-copy">
+        <p>GAME 03 · GOLDEN FLOWER</p>
+        <h1>三张暗牌，<br /><em>胆量见真章。</em></h1>
+        <span>随机坐庄，暗牌开局。看牌、跟注、加注或比牌，特殊 235 可以反杀豹子。</span>
+        <div class="rule-chips"><i>豹子最大</i><i>235 反杀豹子</i><i>最多 15 轮</i></div>
+      </div>
+      <form id="zjh-create-form" class="create-card">
+        <div class="create-head"><span>CREATE A TABLE</span><h2>创建炸金花房间</h2></div>
+        <label>你的昵称<input id="zjh-create-name" maxlength="16" placeholder="例如：金花老王" required /></label>
+        <div class="form-grid">
+          <label>起始积分<input id="zjh-starting-points" type="number" min="100" max="100000" value="1000" /></label>
+          <label>游戏底注<input id="zjh-ante" type="number" min="1" max="10000" value="10" /></label>
+          <label>人数上限<input id="zjh-max-players" type="number" min="2" max="5" value="5" /></label>
+          <label>行动时间（秒）<input id="zjh-decision-time" type="number" min="5" max="120" value="30" /></label>
+        </div>
+        <button class="primary-button" type="submit">创建私人房间 <b>→</b></button>
+        <p>纯娱乐积分，无充值、提现或现金价值。</p>
+      </form>
+    </section>
+  </main>
+
+  <main id="zjh-room" class="zjh-room hidden">
+    <div class="room-toolbar">
+      <a class="mini-brand" href="/"><span>R</span></a>
+      <div class="room-code">炸金花房间 <strong id="zjh-room-id">—</strong></div>
+      <div class="toolbar-actions">
+        <button id="zjh-away" class="outline-button">暂时离座</button>
+        <button id="zjh-pause" class="outline-button host-only hidden">暂停</button>
+        <button id="zjh-auto-start" class="outline-button host-only hidden">自动下一局：关</button>
+        <button id="zjh-manage" class="outline-button host-only hidden">玩家管理</button>
+        <button id="zjh-copy" class="outline-button">复制邀请链接</button>
+      </div>
+    </div>
+    <div class="zjh-game-layout">
+      <section class="zjh-table-zone">
+        <div class="zjh-round-info"><span id="zjh-round">等待开局</span><span id="zjh-ante-info">底注 10</span><span id="zjh-unit-info">暗注 10</span></div>
+        <div class="zjh-table">
+          <div class="zjh-felt-line"></div>
+          <div id="zjh-seats"></div>
+          <div class="zjh-center">
+            <small id="zjh-phase-label">炸金花</small>
+            <strong>底池 <b id="zjh-pot">0</b></strong>
+            <span id="zjh-center-message">等待房主开始</span>
+          </div>
+        </div>
+        <div class="zjh-action-panel">
+          <div id="zjh-own-hand" class="zjh-own-hand"><span>你的牌</span><div id="zjh-own-cards"></div><strong id="zjh-hand-name">尚未看牌</strong></div>
+          <div id="zjh-action-message" class="zjh-action-message">等待房主开始</div>
+          <div id="zjh-turn-timer" class="zjh-turn-timer hidden"><span>行动剩余</span><strong>30</strong><i></i></div>
+          <div id="zjh-actions" class="zjh-actions hidden">
+            <button id="zjh-look" class="look">看牌</button>
+            <button id="zjh-call">跟注 <b id="zjh-call-cost">10</b></button>
+            <label>加注到<input id="zjh-raise-unit" type="number" min="1" value="20" /></label>
+            <button id="zjh-raise">加注</button>
+            <button id="zjh-compare">比牌</button>
+            <button id="zjh-fold" class="danger">弃牌</button>
+          </div>
+          <button id="zjh-start" class="primary-button room-start hidden">开始游戏 <b>→</b></button>
+          <button id="zjh-reseat" class="primary-button room-start hidden">重新坐下 <b>↻</b></button>
+        </div>
+      </section>
+      <aside id="zjh-sidebar" class="niu-sidebar">
+        <button id="zjh-close-sidebar" class="close-side">关闭 ×</button>
+        <div class="niu-tabs"><button data-zjh-tab="chat" class="active">聊天 <span id="zjh-chat-count">0</span></button><button data-zjh-tab="players">玩家 <span id="zjh-player-count">0</span></button><button data-zjh-tab="activity">牌局动态</button></div>
+        <div id="zjh-chat-pane" class="niu-pane chat-pane"><div id="zjh-chat-list" class="niu-feed"></div><form id="zjh-chat-form"><input id="zjh-chat-input" maxlength="160" placeholder="说点什么…" /><button>↑</button></form></div>
+        <div id="zjh-players-pane" class="niu-pane hidden"><div id="zjh-player-list"></div></div>
+        <div id="zjh-activity-pane" class="niu-pane hidden"><div id="zjh-activity-list" class="niu-feed"></div></div>
+      </aside>
+    </div>
+    <nav class="niu-mobile-dock"><button data-zjh-mobile="table" class="active">♠<small>牌桌</small></button><button data-zjh-mobile="chat">◇<small>聊天</small></button><button data-zjh-mobile="players">◎<small>玩家</small></button><button id="zjh-mobile-away">↗<small>离座</small></button><button id="zjh-mobile-manage" class="host-only hidden">⚙<small>管理</small></button></nav>
+  </main>
+
+  <div id="zjh-join-modal" class="niu-modal hidden">
+    <form id="zjh-join-form" class="niu-modal-card join-modal-card">
+      <button id="zjh-close-join" class="modal-close" type="button">×</button>
+      <p>SELECT YOUR SEAT</p><h2>选择炸金花座位</h2>
+      <div id="zjh-seat-step"><div class="zjh-seat-picker"><div class="zjh-picker-felt">诈<small id="zjh-picker-code">ROOM</small></div><div id="zjh-seat-options"></div></div><span id="zjh-seat-status">读取座位中…</span></div>
+      <div id="zjh-join-details" class="hidden"><button id="zjh-back-seats" type="button" class="link-button">← 重新选座</button><div class="selected-seat">已选择 <strong id="zjh-selected-seat">—</strong> 号座位</div><label>昵称<input id="zjh-join-name" maxlength="16" required /></label><label>入座积分<input id="zjh-join-points" type="number" min="10" max="100000" value="1000" /></label><button class="primary-button" type="submit">确认入座 <b>→</b></button></div>
+    </form>
+  </div>
+
+  <div id="zjh-compare-modal" class="niu-modal hidden"><section class="niu-modal-card compare-card"><button id="zjh-close-compare" class="modal-close">×</button><p>CHOOSE AN OPPONENT</p><h2>选择比牌对象</h2><div id="zjh-compare-list"></div><small>比牌支付双倍跟注费用，牌面不会向其他玩家公开；牌型点数完全相同时，主动比牌者负。</small></section></div>
+
+  <div id="zjh-rules" class="niu-modal hidden"><section class="niu-modal-card rules-card zjh-rules-card"><button id="zjh-close-rules" class="modal-close">×</button><p>HOW TO PLAY</p><h2>炸金花规则</h2>
+    <h3>基本玩法</h3><ol><li>2–5 人，使用去掉大小王的一副 52 张扑克牌。开局所有玩家支付底注，随机一人坐庄。</li><li>从庄家开始逆时针发牌，每人三张暗牌；庄家下家首先行动。</li><li>玩家可看牌、跟注、加注、弃牌；每人每轮最多加注一次。</li><li>暗牌跟暗牌支付相同金额；明牌玩家支付暗注的双倍。比牌再支付双倍跟注费用。</li><li>第二轮开始可选择任意仍在局中的玩家比牌，其他玩家看不到双方牌面；同牌型同点数时主动比牌者负。</li><li>最多 15 轮，达到上限后从庄家下家开始依次强制比牌。</li></ol>
+    <h3>牌型大小</h3><p>豹子 ＞ 顺金 ＞ 金花 ＞ 顺子 ＞ 对子 ＞ 散牌。QKA 为最大顺子，A23 为最小顺子，KA2 不是顺子。花色不分大小。</p><p>特殊 235 平时按散牌比较；遇到豹子时，非同花 235 反杀豹子。</p>
+  </section></div>
+
+  <div id="zjh-admin" class="niu-modal hidden"><section class="niu-modal-card admin-card"><button id="zjh-close-admin" class="modal-close">×</button><p>ROOM OWNER</p><h2>炸金花玩家管理</h2><button id="zjh-admin-auto" class="outline-button admin-auto">自动下一局：关</button><div id="zjh-admin-list"></div></section></div>
+  <div id="zjh-toast" class="niu-toast"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/zjh.js"></script>
+</body>
+</html>
