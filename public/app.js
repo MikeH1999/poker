@@ -7,6 +7,7 @@ let state = null;
 let me = null;
 let toastTimer;
 let lastCommunityKeys = [];
+let selectedSeat = null;
 
 const els = {
   landing: $("#landing"), room: $("#room"), joinModal: $("#join-modal"),
@@ -67,15 +68,24 @@ els.roomCode.addEventListener("keydown", (event) => { if (event.key === "Enter")
 
 $("#join-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (selectedSeat === null) return toast("请先选择座位");
   const name = getName(els.joinName); if (!name) return;
-  await joinRoom(name);
+  await joinRoom(name, $("#join-points").value, selectedSeat);
 });
 
-async function joinRoom(name = storedName(), points = $("#join-points").value) {
-  const response = await emit("room:join", { roomId, name, points, token: localStorage.getItem(tokenKey(roomId)) });
+async function joinRoom(name = storedName(), points = $("#join-points").value, seat = selectedSeat) {
+  const response = await emit("room:join", { roomId, name, points, seat, token: localStorage.getItem(tokenKey(roomId)) });
   if (!response.ok) {
     if (response.error.includes("房间不存在")) { toast(response.error); setTimeout(() => location.href = "/", 1400); }
-    else toast(response.error);
+    else {
+      toast(response.error);
+      if (response.error.includes("座位")) {
+        selectedSeat = null;
+        $("#join-details").classList.add("hidden");
+        $("#seat-step").classList.remove("hidden");
+        loadRoomPreview();
+      }
+    }
     return false;
   }
   localStorage.setItem(tokenKey(roomId), response.token);
@@ -83,6 +93,47 @@ async function joinRoom(name = storedName(), points = $("#join-points").value) {
   me = response.playerId;
   return true;
 }
+
+async function loadRoomPreview() {
+  $("#seat-picker-status").textContent = "正在读取牌桌座位…";
+  const preview = await emit("room:preview", { roomId });
+  if (!preview.ok) {
+    $("#seat-picker-status").textContent = preview.error;
+    if (preview.error.includes("房间不存在")) setTimeout(() => { location.href = "/"; }, 1400);
+    return;
+  }
+  $("#seat-room-code").textContent = `ROOM ${preview.roomId}`;
+  $("#join-points").value = preview.defaultPoints || 1000;
+  const occupied = new Map(preview.occupiedSeats.map((player) => [player.seat, player]));
+  $("#seat-options").innerHTML = Array.from({ length: 8 }, (_, seat) => {
+    const player = occupied.get(seat);
+    const full = !player && preview.remainingSlots === 0;
+    return `<button class="seat-choice ${player ? "occupied" : full ? "unavailable" : "available"}" data-seat="${seat}" data-pos="${seat}" type="button" ${player || full ? "disabled" : ""}>
+      <strong>${seat + 1}</strong><small>${player ? escapeHTML(player.name) : full ? "已满" : "空位"}</small>
+    </button>`;
+  }).join("");
+  const availableCount = 8 - occupied.size;
+  $("#seat-picker-status").textContent = preview.handInProgress
+    ? `本手正在进行，选座后请在本手结束时确认入座 · 剩余 ${preview.remainingSlots} 个名额`
+    : `${availableCount} 个空位 · 剩余 ${preview.remainingSlots} 个入座名额`;
+}
+
+$("#seat-options").addEventListener("click", (event) => {
+  const button = event.target.closest(".seat-choice.available");
+  if (!button) return;
+  selectedSeat = Number(button.dataset.seat);
+  $("#selected-seat-number").textContent = selectedSeat + 1;
+  $("#seat-step").classList.add("hidden");
+  $("#join-details").classList.remove("hidden");
+  requestAnimationFrame(() => els.joinName.focus());
+});
+
+$("#back-to-seats").addEventListener("click", () => {
+  selectedSeat = null;
+  $("#join-details").classList.add("hidden");
+  $("#seat-step").classList.remove("hidden");
+  loadRoomPreview();
+});
 
 function showRoom() {
   els.landing.classList.add("hidden");
@@ -95,7 +146,10 @@ if (roomId) {
   showRoom();
   const token = localStorage.getItem(tokenKey(roomId));
   if (token) joinRoom();
-  else els.joinModal.classList.remove("hidden");
+  else {
+    els.joinModal.classList.remove("hidden");
+    loadRoomPreview();
+  }
 }
 
 socket.on("connect", () => {
@@ -147,14 +201,15 @@ function render() {
 function renderSeats() {
   els.seats.innerHTML = state.players.map((player) => {
     const cards = player.cards?.length ? player.cards.map(cardHTML).join("") : player.cardCount ? `${cardHTML(null)}${cardHTML(null)}` : "";
-    return `<div class="seat ${player.isTurn ? "turn" : ""} ${player.folded ? "folded" : ""} ${player.away ? "away" : ""}" data-pos="${player.seat}">
+    const winner = Boolean(state.hand?.result?.winnerIds?.includes(player.id));
+    return `<div class="seat ${player.isTurn ? "turn" : ""} ${player.folded ? "folded" : ""} ${player.away ? "away" : ""} ${winner ? "winner" : ""} ${player.id === me ? "own" : ""}" data-pos="${player.seat}">
       <div class="seat-cards">${cards}</div>
       <div class="avatar">${escapeHTML(player.name[0]?.toUpperCase() || "P")}</div>
       <div class="seat-box">
         <div class="seat-name">${escapeHTML(player.name)} ${state.hand?.dealerId === player.id ? '<span class="dealer-chip">D</span>' : ""}</div>
         <div class="seat-points">◆ ${player.points.toLocaleString()}</div>
       </div>
-      ${player.bet ? `<div class="seat-bet">${player.bet}</div>` : ""}
+      ${player.bet ? `<div class="seat-bet"><span>下注</span><strong>${player.bet}</strong></div>` : ""}
     </div>`;
   }).join("");
 }

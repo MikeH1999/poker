@@ -27,11 +27,18 @@ await Promise.all([connected(host), connected(guest)]);
 const created = await emit(host, "room:create", { name: "Host", settings: { startingPoints: 1000, smallBlind: 10, bigBlind: 20 } });
 assert.equal(created.ok, true);
 hostId = created.playerId;
-const joined = await emit(guest, "room:join", { roomId: created.roomId, name: "Guest", points: 1200 });
+const preview = await emit(guest, "room:preview", { roomId: created.roomId });
+assert.equal(preview.ok, true);
+assert.equal(preview.defaultPoints, 1000);
+assert.equal(preview.remainingSlots, 7);
+assert.equal(preview.occupiedSeats[0].seat, 0);
+assert.equal((await emit(guest, "room:join", { roomId: created.roomId, name: "Guest", points: 1200, seat: 0 })).ok, false);
+const joined = await emit(guest, "room:join", { roomId: created.roomId, name: "Guest", points: 1200, seat: 3 });
 assert.equal(joined.ok, true);
 guestId = joined.playerId;
 await waitFor(host, (value) => value.players.length === 2);
 assert.equal(latest.get(host.id).players.find((player) => player.id === guestId).points, 1200);
+assert.equal(latest.get(host.id).players.find((player) => player.id === guestId).seat, 3);
 
 assert.equal((await emit(host, "game:pause", { paused: true })).ok, true);
 await waitFor(host, (value) => value.paused === true);
@@ -77,7 +84,7 @@ assert.equal(finished.players.every((p) => p.cards.length === 2), true);
 assert.equal(finished.players.every((p) => Boolean(p.handName)), true);
 assert.deepEqual(communityCounts, [0, 1, 2, 3, 4, 5]);
 assert.equal(finished.hand.pot, 2000);
-assert.equal(finished.hand.result.text.includes("；"), false);
+for (const player of finished.players) assert.equal(finished.hand.result.text.split(player.name).length - 1 <= 1, true);
 assert.equal(finished.players.reduce((sum, p) => sum + p.points, 0), 2500);
 assert.equal((await emit(host, "host:auto-start", { enabled: true })).ok, true);
 await waitFor(host, (value) => Boolean(value.nextHandAt));
@@ -85,7 +92,7 @@ assert.equal((await emit(host, "host:auto-start", { enabled: false })).ok, true)
 assert.equal((await emit(host, "host:kick", { playerId: guestId })).ok, true);
 const afterKick = await waitFor(host, (value) => value.players.length === 1);
 assert.equal(afterKick.players[0].id, hostId);
-console.log(JSON.stringify({ room: created.roomId, hand: finished.hand.result.text, totalPoints: 2500, permissions: "ok", awayState: "ok", kick: "ok", runout: communityCounts, handName: "ok", autoStart: "ok" }));
+console.log(JSON.stringify({ room: created.roomId, hand: finished.hand.result.text, totalPoints: 2500, permissions: "ok", awayState: "ok", kick: "ok", runout: communityCounts, handName: "ok", autoStart: "ok", seatSelection: "ok" }));
 host.disconnect();
 guest.disconnect();
 

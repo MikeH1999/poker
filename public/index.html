@@ -181,16 +181,27 @@
   </div>
 
   <div id="join-modal" class="modal hidden">
-    <form id="join-form" class="modal-card">
+    <form id="join-form" class="modal-card join-card">
       <span class="modal-suit">♠</span>
       <p class="section-kicker">PRIVATE INVITATION</p>
       <h2>你收到一张牌桌邀请</h2>
-      <p>输入昵称即可入座，无需注册。</p>
-      <label class="field-label" for="join-name">你的昵称</label>
-      <div class="input-shell"><span>◎</span><input id="join-name" maxlength="16" placeholder="例如：河牌老王" autocomplete="nickname" /></div>
-      <label class="field-label" for="join-points">入座积分</label>
-      <div class="input-shell"><span>◆</span><input id="join-points" type="number" min="100" max="100000" value="1000" inputmode="numeric" /></div>
-      <button class="primary-btn" type="submit">加入牌桌 <b>→</b></button>
+      <div id="seat-step">
+        <p>先选择一个空位，选好后再填写入座信息。</p>
+        <div class="seat-picker">
+          <div class="seat-picker-table"><span>RIVER CLUB</span><small id="seat-room-code">PRIVATE TABLE</small></div>
+          <div id="seat-options"></div>
+        </div>
+        <p id="seat-picker-status" class="seat-picker-status">正在读取牌桌座位…</p>
+      </div>
+      <div id="join-details" class="join-details hidden">
+        <button id="back-to-seats" class="back-to-seats" type="button">← 重新选座</button>
+        <div class="selected-seat-label">已选择 <strong id="selected-seat-number">—</strong> 号座位</div>
+        <label class="field-label" for="join-name">你的昵称</label>
+        <div class="input-shell"><span>◎</span><input id="join-name" maxlength="16" placeholder="例如：河牌老王" autocomplete="nickname" /></div>
+        <label class="field-label" for="join-points">入座积分</label>
+        <div class="input-shell"><span>◆</span><input id="join-points" type="number" min="100" max="100000" value="1000" inputmode="numeric" /></div>
+        <button class="primary-btn" type="submit">确认入座 <b>→</b></button>
+      </div>
     </form>
   </div>
 

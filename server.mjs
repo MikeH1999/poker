@@ -72,10 +72,17 @@ function clamp(value, min, max, fallback) {
   return Math.min(max, Math.max(min, Math.round(number)));
 }
 
-function addPlayer(room, name, requestedPoints) {
+function addPlayer(room, name, requestedPoints, requestedSeat) {
   const taken = new Set(room.players.map((p) => p.seat));
-  let seat = 0;
-  while (taken.has(seat)) seat += 1;
+  let seat;
+  if (requestedSeat === undefined || requestedSeat === null || requestedSeat === "") {
+    seat = 0;
+    while (taken.has(seat)) seat += 1;
+  } else {
+    seat = Number(requestedSeat);
+    if (!Number.isInteger(seat) || seat < 0 || seat > 7) throw new Error("请选择有效座位");
+    if (taken.has(seat)) throw new Error("该座位已被占用，请重新选择");
+  }
   const player = {
     id: randomUUID(),
     token: randomBytes(18).toString("base64url"),
@@ -537,7 +544,28 @@ io.on("connection", (socket) => {
     } catch (error) { reply({ ok: false, error: error.message }); }
   });
 
-  socket.on("room:join", ({ roomId: rawId, name, token, points }, reply = () => {}) => {
+  socket.on("room:preview", ({ roomId: rawId }, reply = () => {}) => {
+    try {
+      const id = String(rawId || "").toUpperCase();
+      const room = rooms.get(id);
+      if (!room) throw new Error("房间不存在或已关闭");
+      reply({
+        ok: true,
+        roomId: room.id,
+        maxPlayers: room.settings.maxPlayers,
+        remainingSlots: Math.max(0, room.settings.maxPlayers - room.players.length),
+        defaultPoints: room.settings.startingPoints,
+        handInProgress: Boolean(room.hand && !room.hand.result),
+        occupiedSeats: room.players.map((player) => ({
+          seat: player.seat,
+          name: player.name,
+          connected: player.connected,
+        })),
+      });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("room:join", ({ roomId: rawId, name, token, points, seat }, reply = () => {}) => {
     try {
       const id = String(rawId || "").toUpperCase();
       const room = rooms.get(id);
@@ -546,7 +574,8 @@ io.on("connection", (socket) => {
       if (!player) {
         if (room.players.length >= room.settings.maxPlayers) throw new Error("房间已满");
         if (room.hand && !room.hand.result) throw new Error("本手进行中，请在下一手加入");
-        player = addPlayer(room, name, points);
+        if (seat === undefined || seat === null || seat === "") throw new Error("请先选择座位");
+        player = addPlayer(room, name, points, seat);
         systemMessage(room, `${player.name} 加入了牌桌`);
       }
       player.socketId = socket.id;
