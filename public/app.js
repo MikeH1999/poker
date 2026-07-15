@@ -9,6 +9,8 @@ let toastTimer;
 let lastCommunityKeys = [];
 let selectedSeat = null;
 let serverClockOffset = 0;
+const chatBubbles = new Map();
+const chatBubbleTimers = new Map();
 
 const els = {
   landing: $("#landing"), room: $("#room"), joinModal: $("#join-modal"),
@@ -176,6 +178,18 @@ socket.on("room:state", (nextState) => {
   render();
 });
 
+socket.on("chat:bubble", ({ playerId, text, expiresAt }) => {
+  chatBubbles.set(playerId, { text, expiresAt });
+  clearTimeout(chatBubbleTimers.get(playerId));
+  chatBubbleTimers.set(playerId, setTimeout(() => {
+    if (chatBubbles.get(playerId)?.expiresAt !== expiresAt) return;
+    chatBubbles.delete(playerId);
+    chatBubbleTimers.delete(playerId);
+    if (state) renderSeats();
+  }, Math.max(0, expiresAt - Date.now())));
+  if (state) renderSeats();
+});
+
 function render() {
   const player = state.players.find((p) => p.id === me);
   const hand = state.hand;
@@ -223,12 +237,14 @@ function renderSeats() {
     const cards = player.cards?.length ? player.cards.map(cardHTML).join("") : player.cardCount ? `${cardHTML(null)}${cardHTML(null)}` : "";
     const winner = Boolean(state.hand?.result?.winnerIds?.includes(player.id));
     const equity = state.hand?.equities?.[player.id];
+    const bubble = chatBubbles.get(player.id);
     return `<div class="seat ${player.isTurn ? "turn" : ""} ${player.folded ? "folded" : ""} ${player.away ? "away" : ""} ${winner ? "winner" : ""} ${player.id === me ? "own" : ""}" data-pos="${player.seat}">
+      ${bubble && bubble.expiresAt > Date.now() ? `<div class="chat-bubble">${escapeHTML(bubble.text)}</div>` : ""}
       <div class="seat-cards">${cards}</div>
       ${player.folded ? '<div class="folded-tag">已弃牌</div>' : ""}
       <div class="avatar">${escapeHTML(player.name[0]?.toUpperCase() || "P")}</div>
       <div class="seat-box">
-        <div class="seat-name">${escapeHTML(player.name)} ${state.hand?.dealerId === player.id ? '<span class="dealer-chip">D</span>' : ""}${player.rejoinCount ? `<span class="reseat-tag">重坐 ×${player.rejoinCount}</span>` : ""}</div>
+        <div class="seat-name"><span class="seat-player-name">${escapeHTML(player.name)}</span>${state.hand?.dealerId === player.id ? '<span class="dealer-chip">D</span>' : ""}${player.rejoinCount ? `<span class="reseat-tag">重坐 ×${player.rejoinCount}</span>` : ""}</div>
         <div class="seat-points">◆ ${player.points.toLocaleString()}</div>
         ${equity !== undefined ? `<div class="equity-badge"><span>胜率</span><strong>${equity}%</strong></div>` : ""}
       </div>

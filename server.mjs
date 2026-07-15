@@ -855,6 +855,7 @@ io.on("connection", (socket) => {
       if (!message) return;
       room.messages.push({ id: randomUUID(), type: "chat", name: player.name, text: message, at: Date.now() });
       broadcast(room);
+      io.to(room.id).emit("chat:bubble", { playerId: player.id, text: message, expiresAt: Date.now() + 6000 });
       reply({ ok: true });
     } catch (error) { reply({ ok: false, error: error.message }); }
   });

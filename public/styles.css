@@ -137,6 +137,11 @@ input::placeholder { color: #63716a; }
 .seat.turn .avatar { border-color: var(--lime); color: #182019; background: var(--lime); box-shadow: 0 0 24px rgba(223,255,79,.65); }
 .seat.folded .seat-cards,.seat.folded .avatar,.seat.folded .seat-box,.seat.folded .seat-bet { opacity: .38; filter: grayscale(.75); }
 .folded-tag { position: absolute; left: 50%; top: -18px; z-index: 6; transform: translateX(-50%); min-width: 58px; padding: 4px 9px; border: 1px solid #ff6258; border-radius: 14px; color: #fff; background: rgba(184,48,48,.94); box-shadow: 0 0 18px rgba(255,74,64,.5); font: 800 10px/1.2 "Noto Sans SC",sans-serif; white-space: nowrap; }
+.chat-bubble { position: absolute; left: 50%; top: -94px; z-index: 20; transform: translateX(-50%); width: max-content; min-width: 74px; max-width: 180px; padding: 8px 11px; border: 1px solid rgba(255,255,255,.9); border-radius: 9px; color: #1d2420; background: rgba(255,255,255,.96); box-shadow: 0 10px 26px rgba(0,0,0,.35); font: 700 11px/1.35 "Noto Sans SC",sans-serif; white-space: normal; overflow-wrap: anywhere; animation: chat-bubble-in .2s ease-out,chat-bubble-out .35s ease-in 5.45s forwards; }
+.chat-bubble::after { content: ""; position: absolute; left: 50%; bottom: -7px; width: 12px; height: 12px; transform: translateX(-50%) rotate(45deg); border-right: 1px solid rgba(255,255,255,.9); border-bottom: 1px solid rgba(255,255,255,.9); background: rgba(255,255,255,.96); }
+.seat[data-pos="3"] .chat-bubble,.seat[data-pos="4"] .chat-bubble,.seat[data-pos="5"] .chat-bubble { top: 76px; }
+@keyframes chat-bubble-in { from { opacity: 0; transform: translate(-50%,8px) scale(.92); } to { opacity: 1; transform: translate(-50%,0) scale(1); } }
+@keyframes chat-bubble-out { to { opacity: 0; transform: translate(-50%,-5px) scale(.96); } }
 .seat.away { opacity: .42; filter: grayscale(.7); }
 .seat.away .avatar::after { content: "离座"; position: absolute; left: 27px; top: -5px; padding: 2px 4px; border-radius: 8px; color: #172019; background: var(--gold-light); font: 7px sans-serif; white-space: nowrap; }
 .seat-box { min-height: 43px; padding: 8px 10px 6px; background: rgba(28,31,29,.92); border: 1px solid rgba(255,255,255,.2); box-shadow: 0 6px 16px rgba(0,0,0,.25); }
@@ -145,8 +150,10 @@ input::placeholder { color: #63716a; }
 .seat.winner { opacity: 1; }
 .seat.winner .seat-box { color: #172018; background: #f1ffa7; border-color: #f7ffd0; box-shadow: 0 0 34px rgba(223,255,79,.72); }
 .seat.winner .seat-points, .seat.winner .seat-name { color: #172018; }
-.seat-name { display: flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-weight: 700; }
-.reseat-tag { padding: 2px 4px; border-radius: 8px; color: #dedaff; background: rgba(121,108,255,.25); font: 7px/1 "Noto Sans SC",sans-serif; }
+.seat-name { display: flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; font-size: 11px; font-weight: 700; }
+.seat-player-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dealer-chip,.reseat-tag { flex: 0 0 auto; }
+.reseat-tag { padding: 3px 6px; border: 1px solid #a69eff; border-radius: 9px; color: #fff; background: #6254df; box-shadow: 0 2px 8px rgba(76,62,190,.45); font: 800 8px/1 "Noto Sans SC",sans-serif; letter-spacing: .02em; }
 .seat-points { color: #f4f6f3; font: 800 11px monospace; margin-top: 3px; }
 .equity-badge { margin: 5px -4px -2px; padding: 4px 5px; display: flex; align-items: center; justify-content: center; gap: 5px; border-radius: 4px; color: #182018; background: var(--lime); box-shadow: 0 0 15px rgba(223,255,79,.4); }
 .equity-badge span { font-size: 7px; opacity: .68; }
