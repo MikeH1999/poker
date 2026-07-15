@@ -54,6 +54,7 @@ function createRoom(ownerName, settings = {}) {
       smallBlind: clamp(settings.smallBlind, 5, 1000, 10),
       bigBlind: clamp(settings.bigBlind, 10, 2000, 20),
       maxPlayers: clamp(settings.maxPlayers, 2, 8, 8),
+      decisionTimeSeconds: clamp(settings.decisionTimeSeconds, 5, 120, 30),
       autoStartNextHand: Boolean(settings.autoStartNextHand),
     },
     hand: null,
@@ -109,6 +110,7 @@ function publicState(room, viewerId) {
     id: room.id,
     hostId: room.hostId,
     paused: room.paused,
+    serverTime: Date.now(),
     nextHandAt: room.nextHandAt,
     settings: room.settings,
     handNumber: room.handNumber,
@@ -134,6 +136,7 @@ function publicState(room, viewerId) {
       currentBet: hand.currentBet,
       minRaise: hand.minRaise,
       actionPlayerId: hand.actionPlayerId,
+      actionDeadline: hand.actionDeadline,
       dealerId: hand.dealerId,
       smallBlindId: hand.smallBlindId,
       bigBlindId: hand.bigBlindId,
@@ -174,6 +177,41 @@ function takeBet(player, amount) {
   return paid;
 }
 
+function clearActionTimer(hand) {
+  if (!hand) return;
+  if (hand.actionTimer) clearTimeout(hand.actionTimer);
+  hand.actionTimer = null;
+  hand.actionDeadline = null;
+}
+
+function armActionTimer(room) {
+  const hand = room.hand;
+  if (!hand || hand.result || !hand.actionPlayerId || room.paused) return;
+  clearActionTimer(hand);
+  const playerId = hand.actionPlayerId;
+  hand.actionDeadline = Date.now() + room.settings.decisionTimeSeconds * 1000;
+  hand.actionTimer = setTimeout(() => {
+    if (room.hand !== hand || hand.result || hand.actionPlayerId !== playerId || room.paused) return;
+    const player = room.players.find((candidate) => candidate.id === playerId);
+    if (!player || player.folded) return;
+    const action = hand.currentBet === player.bet ? "check" : "fold";
+    try {
+      act(room, player, action, undefined, { timedOut: true });
+      broadcast(room);
+    } catch { /* state changed at the deadline */ }
+  }, room.settings.decisionTimeSeconds * 1000);
+}
+
+function setActionPlayer(room, player) {
+  const hand = room.hand;
+  clearActionTimer(hand);
+  hand.actionPlayerId = player?.id || null;
+  if (player) {
+    player.status = "轮到你";
+    armActionTimer(room);
+  }
+}
+
 function startHand(room) {
   clearAutoStart(room);
   const active = seated(room);
@@ -206,6 +244,8 @@ function startHand(room) {
     smallBlindId: active[smallBlindIndex].id,
     bigBlindId: active[bigBlindIndex].id,
     actionPlayerId: null,
+    actionDeadline: null,
+    actionTimer: null,
     result: null,
     revealed: {},
     runout: false,
@@ -213,8 +253,7 @@ function startHand(room) {
   const firstPlayer = active.length === 2
     ? active[dealerIndex]
     : nextFrom(active, bigBlindIndex, (p) => !p.folded && p.points > 0)?.player;
-  room.hand.actionPlayerId = firstPlayer?.id || null;
-  if (firstPlayer) firstPlayer.status = "轮到你";
+  setActionPlayer(room, firstPlayer);
   systemMessage(room, `第 ${room.handNumber} 手开始，盲注 ${room.settings.smallBlind}/${room.settings.bigBlind}`);
 }
 
@@ -233,7 +272,7 @@ function nextAction(room, currentId) {
   return nextFrom(ordered, start, (p) => pendingPlayers(room).some((x) => x.id === p.id))?.player || null;
 }
 
-function act(room, player, action, amount) {
+function act(room, player, action, amount, options = {}) {
   const hand = room.hand;
   if (!hand || hand.result) throw new Error("当前没有进行中的牌局");
   if (hand.actionPlayerId !== player.id) throw new Error("还没轮到你");
@@ -290,7 +329,7 @@ function act(room, player, action, amount) {
     throw new Error("未知操作");
   }
 
-  systemMessage(room, `${player.name} ${label}`);
+  systemMessage(room, options.timedOut ? `${player.name} 思考超时，系统自动${label}` : `${player.name} ${label}`);
   progressHand(room, player.id);
 }
 
@@ -307,8 +346,7 @@ function progressHand(room, currentId) {
 
   if (pendingPlayers(room).length) {
     const next = nextAction(room, currentId);
-    hand.actionPlayerId = next?.id || null;
-    for (const p of alive) if (p.id === next?.id) p.status = "轮到你";
+    setActionPlayer(room, next);
     return;
   }
 
@@ -327,13 +365,13 @@ function progressHand(room, currentId) {
   const ordered = room.players.filter((p) => p.holeCards.length).sort((a, b) => a.seat - b.seat);
   const dealerIndex = ordered.findIndex((p) => p.id === hand.dealerId);
   const first = nextFrom(ordered, dealerIndex, (p) => !p.folded && p.points > 0)?.player;
-  hand.actionPlayerId = first?.id || null;
-  if (first) first.status = "轮到你";
+  setActionPlayer(room, first);
 }
 
 function scheduleRunout(room) {
   const hand = room.hand;
   if (!hand || hand.result || hand.runout) return;
+  clearActionTimer(hand);
   hand.runout = true;
   hand.actionPlayerId = null;
   for (const player of contenders(room)) player.status = "等待逐张跑牌";
@@ -402,6 +440,7 @@ function advanceStreet(room, runout = false) {
 
 function showdown(room) {
   const hand = room.hand;
+  clearActionTimer(hand);
   const alive = contenders(room);
   for (const player of alive) hand.revealed[player.id] = player.holeCards;
   const scores = new Map(alive.map((p) => [p.id, evaluateSeven([...p.holeCards, ...hand.community])]));
@@ -444,6 +483,7 @@ function showdown(room) {
 }
 
 function finishHand(room, text, winnerIds) {
+  clearActionTimer(room.hand);
   room.hand.actionPlayerId = null;
   room.hand.result = { text, winnerIds };
   for (const player of room.players) {
@@ -573,10 +613,15 @@ io.on("connection", (socket) => {
       let player = room.players.find((p) => p.token === token);
       if (!player) {
         if (room.players.length >= room.settings.maxPlayers) throw new Error("房间已满");
-        if (room.hand && !room.hand.result) throw new Error("本手进行中，请在下一手加入");
         if (seat === undefined || seat === null || seat === "") throw new Error("请先选择座位");
         player = addPlayer(room, name, points, seat);
-        systemMessage(room, `${player.name} 加入了牌桌`);
+        if (room.hand && !room.hand.result) {
+          player.folded = true;
+          player.status = "下一手入座";
+          systemMessage(room, `${player.name} 已入座，将从下一手加入`);
+        } else {
+          systemMessage(room, `${player.name} 加入了牌桌`);
+        }
       }
       player.socketId = socket.id;
       player.connected = true;
@@ -615,8 +660,13 @@ io.on("connection", (socket) => {
       const { room, player } = identify(socket);
       requireHost(room, player);
       room.paused = Boolean(paused);
-      if (room.paused) clearAutoStart(room);
-      else scheduleAutoStart(room);
+      if (room.paused) {
+        clearAutoStart(room);
+        clearActionTimer(room.hand);
+      } else {
+        scheduleAutoStart(room);
+        armActionTimer(room);
+      }
       systemMessage(room, `${player.name} ${room.paused ? "暂停了牌桌" : "恢复了牌桌"}`);
       broadcast(room);
       reply({ ok: true });
@@ -684,7 +734,7 @@ io.on("connection", (socket) => {
     } catch (error) { reply({ ok: false, error: error.message }); }
   });
 
-  socket.on("host:settings", ({ smallBlind, bigBlind }, reply = () => {}) => {
+  socket.on("host:settings", ({ smallBlind, bigBlind, decisionTimeSeconds }, reply = () => {}) => {
     try {
       const { room, player: host } = identify(socket);
       requireHost(room, host);
@@ -693,7 +743,8 @@ io.on("connection", (socket) => {
       const bb = clamp(bigBlind, sb * 2, 2000000, room.settings.bigBlind);
       room.settings.smallBlind = sb;
       room.settings.bigBlind = bb;
-      systemMessage(room, `${host.name} 将盲注调整为 ${sb}/${bb}`);
+      room.settings.decisionTimeSeconds = clamp(decisionTimeSeconds, 5, 120, room.settings.decisionTimeSeconds);
+      systemMessage(room, `${host.name} 将盲注调整为 ${sb}/${bb}，思考时间 ${room.settings.decisionTimeSeconds} 秒`);
       broadcast(room);
       reply({ ok: true });
     } catch (error) { reply({ ok: false, error: error.message }); }

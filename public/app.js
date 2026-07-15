@@ -8,6 +8,7 @@ let me = null;
 let toastTimer;
 let lastCommunityKeys = [];
 let selectedSeat = null;
+let serverClockOffset = 0;
 
 const els = {
   landing: $("#landing"), room: $("#room"), joinModal: $("#join-modal"),
@@ -50,6 +51,7 @@ $("#create-room").addEventListener("click", async () => {
     smallBlind: $("#small-blind").value,
     bigBlind: $("#big-blind").value,
     maxPlayers: $("#max-players").value,
+    decisionTimeSeconds: $("#decision-time").value,
   }});
   if (!response.ok) return toast(response.error);
   localStorage.setItem(tokenKey(response.roomId), response.token);
@@ -114,7 +116,7 @@ async function loadRoomPreview() {
   }).join("");
   const availableCount = 8 - occupied.size;
   $("#seat-picker-status").textContent = preview.handInProgress
-    ? `本手正在进行，选座后请在本手结束时确认入座 · 剩余 ${preview.remainingSlots} 个名额`
+    ? `本手正在进行，可立即入座并从下一手加入 · 剩余 ${preview.remainingSlots} 个名额`
     : `${availableCount} 个空位 · 剩余 ${preview.remainingSlots} 个入座名额`;
 }
 
@@ -157,6 +159,7 @@ socket.on("connect", () => {
 });
 
 socket.on("room:state", (nextState) => {
+  serverClockOffset = (nextState.serverTime || Date.now()) - Date.now();
   state = nextState;
   if (!me) me = state.players.find((p) => p.cards?.length)?.id || state.players.find((p) => p.name === storedName())?.id;
   render();
@@ -195,6 +198,7 @@ function render() {
   els.result.classList.toggle("hidden", !hand?.result);
   if (hand?.result) els.result.textContent = hand.result.text;
   configureActions(player, hand);
+  updateTurnTimer();
   if (!els.adminModal.classList.contains("hidden")) renderAdmin();
 }
 
@@ -272,6 +276,7 @@ function renderAdmin() {
   if (!state) return;
   $("#admin-sb").value = state.settings.smallBlind;
   $("#admin-bb").value = state.settings.bigBlind;
+  $("#admin-decision-time").value = state.settings.decisionTimeSeconds || 30;
   $("#admin-pause").textContent = state.paused ? "恢复游戏" : "暂停游戏";
   $("#admin-pause").classList.toggle("active", state.paused);
   $("#auto-start").textContent = `自动开始：${state.settings.autoStartNextHand ? "开" : "关"}`;
@@ -286,6 +291,11 @@ function renderAdmin() {
 
 els.raiseRange.addEventListener("input", () => { els.raiseAmount.value = els.raiseRange.value; });
 els.raiseAmount.addEventListener("input", () => { els.raiseRange.value = els.raiseAmount.value; });
+els.raiseAmount.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  $('[data-action="raise"]').click();
+});
 $$('[data-action]').forEach((button) => button.addEventListener("click", async () => {
   const response = await emit("game:action", { action: button.dataset.action, amount: els.raiseAmount.value });
   if (!response.ok) toast(response.error);
@@ -335,9 +345,28 @@ $$('[data-admin-tab]').forEach((button) => button.addEventListener("click", () =
 }));
 
 $("#save-blinds").addEventListener("click", async () => {
-  const response = await emit("host:settings", { smallBlind: $("#admin-sb").value, bigBlind: $("#admin-bb").value });
+  const response = await emit("host:settings", { smallBlind: $("#admin-sb").value, bigBlind: $("#admin-bb").value, decisionTimeSeconds: $("#admin-decision-time").value });
   if (!response.ok) toast(response.error); else toast("盲注已更新，将从下一手生效");
 });
+
+function updateTurnTimer() {
+  const timer = $("#turn-timer");
+  const hand = state?.hand;
+  if (!hand?.actionDeadline || hand.result || state.paused) {
+    timer.classList.add("hidden");
+    return;
+  }
+  const total = state.settings.decisionTimeSeconds || 30;
+  const remaining = Math.max(0, Math.ceil((hand.actionDeadline - (Date.now() + serverClockOffset)) / 1000));
+  const actionPlayer = state.players.find((player) => player.id === hand.actionPlayerId);
+  timer.querySelector("span").textContent = hand.actionPlayerId === me ? "你的思考时间" : `${actionPlayer?.name || "玩家"} 思考中`;
+  timer.querySelector("strong").textContent = remaining;
+  timer.style.setProperty("--time-progress", `${Math.max(0, Math.min(100, remaining / total * 100))}%`);
+  timer.classList.toggle("warning", remaining <= 10);
+  timer.classList.remove("hidden");
+}
+
+setInterval(updateTurnTimer, 250);
 $("#admin-start").addEventListener("click", () => els.start.click());
 
 async function savePlayerPoints(row) {
@@ -387,8 +416,25 @@ socket.on("room:kicked", ({ message }) => {
 
 $("#copy-link").addEventListener("click", async () => {
   const link = `${location.origin}/room/${state?.id || roomId}`;
-  try { await navigator.clipboard.writeText(link); toast("邀请链接已复制"); }
-  catch { prompt("复制这个邀请链接", link); }
+  let copied = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(link);
+      copied = true;
+    }
+  } catch { /* use the compatibility fallback below */ }
+  if (!copied) {
+    const textarea = document.createElement("textarea");
+    textarea.value = link;
+    textarea.setAttribute("readonly", "");
+    textarea.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    try { copied = document.execCommand("copy"); } catch { copied = false; }
+    textarea.remove();
+  }
+  toast(copied ? "邀请链接已复制" : "浏览器禁止复制，请长按地址栏复制链接");
 });
 
 $("#chat-form").addEventListener("submit", async (event) => {
