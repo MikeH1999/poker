@@ -74,7 +74,7 @@ function clamp(value, min, max, fallback) {
 }
 
 function addPlayer(room, name, requestedPoints, requestedSeat) {
-  const taken = new Set(room.players.map((p) => p.seat));
+  const taken = new Set(room.players.filter((p) => p.seated).map((p) => p.seat));
   let seat;
   if (requestedSeat === undefined || requestedSeat === null || requestedSeat === "") {
     seat = 0;
@@ -99,6 +99,8 @@ function addPlayer(room, name, requestedPoints, requestedSeat) {
     acted: false,
     status: "等待中",
     away: false,
+    seated: true,
+    rejoinCount: 0,
   };
   room.players.push(player);
   return player;
@@ -106,6 +108,7 @@ function addPlayer(room, name, requestedPoints, requestedSeat) {
 
 function publicState(room, viewerId) {
   const hand = room.hand;
+  const viewer = room.players.find((player) => player.id === viewerId);
   return {
     id: room.id,
     hostId: room.hostId,
@@ -114,7 +117,13 @@ function publicState(room, viewerId) {
     nextHandAt: room.nextHandAt,
     settings: room.settings,
     handNumber: room.handNumber,
-    players: room.players.map((player) => ({
+    viewer: viewer ? {
+      id: viewer.id,
+      seated: viewer.seated,
+      rejoinCount: viewer.rejoinCount,
+      status: viewer.status,
+    } : null,
+    players: room.players.filter((player) => player.seated).map((player) => ({
       id: player.id,
       name: player.name,
       seat: player.seat,
@@ -128,10 +137,11 @@ function publicState(room, viewerId) {
       cards: player.id === viewerId ? player.holeCards : hand?.revealed?.[player.id] || [],
       cardCount: hand ? player.holeCards.length : 0,
       handName: player.id === viewerId || hand?.revealed?.[player.id] ? describeHand(player, hand) : null,
+      rejoinCount: player.rejoinCount,
     })),
     hand: hand ? {
       phase: hand.phase,
-      pot: room.players.reduce((sum, p) => sum + p.totalBet, 0),
+      pot: hand.potTotal ?? room.players.reduce((sum, p) => sum + p.totalBet, 0),
       community: hand.community,
       currentBet: hand.currentBet,
       minRaise: hand.minRaise,
@@ -142,6 +152,7 @@ function publicState(room, viewerId) {
       bigBlindId: hand.bigBlindId,
       result: hand.result,
       runout: Boolean(hand.runout),
+      equities: hand.equities || {},
     } : null,
     messages: room.messages.slice(-40),
   };
@@ -158,7 +169,7 @@ function systemMessage(room, text) {
 }
 
 function seated(room) {
-  return room.players.filter((p) => p.connected && !p.away && p.points > 0).sort((a, b) => a.seat - b.seat);
+  return room.players.filter((p) => p.seated && p.connected && !p.away && p.points > 0).sort((a, b) => a.seat - b.seat);
 }
 
 function nextFrom(list, startIndex, predicate = () => true) {
@@ -229,7 +240,7 @@ function startHand(room) {
     player.bet = 0;
     player.totalBet = 0;
     player.acted = false;
-    player.status = active.includes(player) ? "思考中" : player.away ? "暂时离座" : player.points <= 0 ? "积分不足" : "离线";
+    player.status = active.includes(player) ? "思考中" : !player.seated ? "积分耗尽，等待重新坐下" : player.away ? "暂时离座" : player.points <= 0 ? "积分不足" : "离线";
   }
 
   takeBet(active[smallBlindIndex], room.settings.smallBlind);
@@ -249,6 +260,8 @@ function startHand(room) {
     result: null,
     revealed: {},
     runout: false,
+    equities: {},
+    potTotal: null,
   };
   const firstPlayer = active.length === 2
     ? active[dealerIndex]
@@ -374,7 +387,11 @@ function scheduleRunout(room) {
   clearActionTimer(hand);
   hand.runout = true;
   hand.actionPlayerId = null;
-  for (const player of contenders(room)) player.status = "等待逐张跑牌";
+  for (const player of contenders(room)) {
+    player.status = "等待逐张跑牌";
+    hand.revealed[player.id] = player.holeCards;
+  }
+  hand.equities = calculateEquities(room);
 
   const tasks = [];
   if (hand.phase === "preflop") {
@@ -403,6 +420,7 @@ function scheduleRunout(room) {
     if (task.burn) hand.deck.pop();
     hand.phase = task.phase;
     hand.community.push(hand.deck.pop());
+    hand.equities = calculateEquities(room);
     if (task.announce) systemMessage(room, task.announce);
     index += 1;
     broadcast(room);
@@ -411,6 +429,33 @@ function scheduleRunout(room) {
 
   systemMessage(room, "All-in，公共牌将逐张发出");
   hand.runoutTimer = setTimeout(revealNext, 600);
+}
+
+function calculateEquities(room) {
+  const hand = room.hand;
+  const players = contenders(room);
+  if (!hand || players.length < 2) return {};
+  const cardsNeeded = Math.max(0, 5 - hand.community.length);
+  const deck = [...hand.deck];
+  const simulations = cardsNeeded === 0 ? 1 : cardsNeeded === 1 ? deck.length : 1500;
+  const shares = new Map(players.map((player) => [player.id, 0]));
+
+  for (let simulation = 0; simulation < simulations; simulation += 1) {
+    const pool = [...deck];
+    const drawn = [];
+    for (let index = 0; index < cardsNeeded; index += 1) {
+      const randomIndex = index + Math.floor(Math.random() * (pool.length - index));
+      [pool[index], pool[randomIndex]] = [pool[randomIndex], pool[index]];
+      drawn.push(pool[index]);
+    }
+    const board = [...hand.community, ...drawn];
+    const results = players.map((player) => ({ player, score: evaluateSeven([...player.holeCards, ...board]) }));
+    results.sort((a, b) => compareScore(b.score, a.score));
+    const winners = results.filter((result) => compareScore(result.score, results[0].score) === 0);
+    for (const winner of winners) shares.set(winner.player.id, shares.get(winner.player.id) + 1 / winners.length);
+  }
+
+  return Object.fromEntries([...shares].map(([playerId, share]) => [playerId, Math.round(share / simulations * 1000) / 10]));
 }
 
 function advanceStreet(room, runout = false) {
@@ -485,13 +530,49 @@ function showdown(room) {
 function finishHand(room, text, winnerIds) {
   clearActionTimer(room.hand);
   room.hand.actionPlayerId = null;
+  room.hand.potTotal = room.players.reduce((sum, player) => sum + player.totalBet, 0);
+  for (const player of room.players) {
+    if (player.holeCards.length === 2) room.hand.revealed[player.id] = player.holeCards;
+  }
   room.hand.result = { text, winnerIds };
   for (const player of room.players) {
     player.bet = 0;
     player.status = player.away ? "暂时离座" : winnerIds.includes(player.id) ? "本手获胜" : "等待下一手";
   }
   systemMessage(room, text);
+  for (const player of room.players) {
+    if (player.seated && player.points <= 0) unseatPlayer(room, player);
+  }
   scheduleAutoStart(room);
+}
+
+function unseatPlayer(room, player) {
+  if (!player.seated) return;
+  player.seated = false;
+  player.seat = null;
+  player.away = false;
+  player.status = "积分耗尽，等待重新坐下";
+  systemMessage(room, `${player.name} 积分耗尽，座位已释放`);
+}
+
+function reseatPlayer(room, player, { name, points, seat }) {
+  if (room.players.filter((candidate) => candidate.seated).length >= room.settings.maxPlayers) throw new Error("房间已满");
+  const numericSeat = Number(seat);
+  if (!Number.isInteger(numericSeat) || numericSeat < 0 || numericSeat > 7) throw new Error("请选择有效座位");
+  if (room.players.some((candidate) => candidate.seated && candidate.seat === numericSeat)) throw new Error("该座位已被占用，请重新选择");
+  player.seated = true;
+  player.seat = numericSeat;
+  player.name = cleanName(name || player.name);
+  player.points = clamp(points, 100, 100000, room.settings.startingPoints);
+  player.rejoinCount += 1;
+  player.away = false;
+  player.holeCards = [];
+  player.folded = Boolean(room.hand && !room.hand.result);
+  player.bet = 0;
+  player.totalBet = 0;
+  player.acted = false;
+  player.status = room.hand && !room.hand.result ? "下一手入座" : "等待中";
+  systemMessage(room, `${player.name} 第 ${player.rejoinCount} 次重新坐下${player.status === "下一手入座" ? "，将从下一手加入" : ""}`);
 }
 
 function clearAutoStart(room) {
@@ -593,10 +674,10 @@ io.on("connection", (socket) => {
         ok: true,
         roomId: room.id,
         maxPlayers: room.settings.maxPlayers,
-        remainingSlots: Math.max(0, room.settings.maxPlayers - room.players.length),
+        remainingSlots: Math.max(0, room.settings.maxPlayers - room.players.filter((player) => player.seated).length),
         defaultPoints: room.settings.startingPoints,
         handInProgress: Boolean(room.hand && !room.hand.result),
-        occupiedSeats: room.players.map((player) => ({
+        occupiedSeats: room.players.filter((player) => player.seated).map((player) => ({
           seat: player.seat,
           name: player.name,
           connected: player.connected,
@@ -611,8 +692,11 @@ io.on("connection", (socket) => {
       const room = rooms.get(id);
       if (!room) throw new Error("房间不存在或已关闭");
       let player = room.players.find((p) => p.token === token);
-      if (!player) {
-        if (room.players.length >= room.settings.maxPlayers) throw new Error("房间已满");
+      if (player && !player.seated) {
+        if (seat === undefined || seat === null || seat === "") return reply({ ok: false, needsSeat: true, error: "请重新选择座位" });
+        reseatPlayer(room, player, { name, points, seat });
+      } else if (!player) {
+        if (room.players.filter((candidate) => candidate.seated).length >= room.settings.maxPlayers) throw new Error("房间已满");
         if (seat === undefined || seat === null || seat === "") throw new Error("请先选择座位");
         player = addPlayer(room, name, points, seat);
         if (room.hand && !room.hand.result) {
@@ -628,7 +712,7 @@ io.on("connection", (socket) => {
       if (name) player.name = cleanName(name);
       socket.join(room.id);
       socket.data = { roomId: room.id, playerId: player.id };
-      reply({ ok: true, roomId: room.id, token: player.token, playerId: player.id });
+      reply({ ok: true, roomId: room.id, token: player.token, playerId: player.id, rejoinCount: player.rejoinCount });
       broadcast(room);
     } catch (error) { reply({ ok: false, error: error.message }); }
   });
@@ -710,6 +794,7 @@ io.on("connection", (socket) => {
       target.points = nextPoints;
       target.status = target.away ? "暂时离座" : nextPoints > 0 ? "等待中" : "积分不足";
       systemMessage(room, `${host.name} 将 ${target.name} 的积分从 ${before} 调整为 ${nextPoints}`);
+      if (nextPoints <= 0) unseatPlayer(room, target);
       broadcast(room);
       reply({ ok: true });
     } catch (error) { reply({ ok: false, error: error.message }); }

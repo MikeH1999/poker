@@ -134,22 +134,33 @@
             <button data-action="allin" class="allin-btn">ALL IN</button>
           </div>
           <button id="start-hand" class="primary-btn start-btn hidden">开始发牌 <b>→</b></button>
+          <button id="reseat-player" class="primary-btn reseat-btn hidden"><span>重新坐下<small id="reseat-count">本房间已重新坐下 0 次</small></span><b>↻</b></button>
         </div>
       </section>
 
       <aside id="sidebar" class="sidebar">
         <button id="close-sidebar" class="close-sidebar">关闭 ×</button>
-        <div class="side-tabs"><button class="active">玩家 <span id="player-count">0</span></button><button>牌局动态</button></div>
-        <div id="player-list" class="player-list"></div>
-        <div class="feed-title"><span>牌局动态</span><i></i></div>
-        <div id="message-list" class="message-list"></div>
-        <form id="chat-form" class="chat-form"><input id="chat-input" maxlength="160" placeholder="说点什么…" /><button>↑</button></form>
+        <div class="side-tabs">
+          <button class="active" data-side-tab="players">玩家 <span id="player-count">0</span></button>
+          <button data-side-tab="chat">聊天 <span id="chat-count">0</span></button>
+          <button data-side-tab="activity">牌局动态</button>
+        </div>
+        <div id="players-pane" class="side-pane players-pane"><div id="player-list" class="player-list"></div></div>
+        <div id="chat-pane" class="side-pane chat-pane hidden">
+          <div class="feed-title"><span>玩家聊天</span><i></i></div>
+          <div id="message-list" class="message-list"></div>
+          <form id="chat-form" class="chat-form"><input id="chat-input" maxlength="160" placeholder="说点什么…" /><button>↑</button></form>
+        </div>
+        <div id="activity-pane" class="side-pane activity-pane hidden">
+          <div class="feed-title"><span>牌局动态</span><i></i></div>
+          <div id="activity-list" class="message-list activity-list"></div>
+        </div>
       </aside>
     </div>
     <nav class="mobile-dock" aria-label="手机端牌桌导航">
       <button data-mobile-panel="table" class="active"><span>♠</span>牌桌</button>
       <button data-mobile-panel="players"><span>◎</span>玩家</button>
-      <button data-mobile-panel="chat"><span>◇</span>动态</button>
+      <button data-mobile-panel="chat"><span>◇</span>聊天</button>
       <button id="mobile-away"><span>↗</span>离座</button>
       <button id="mobile-manage" class="host-only hidden"><span>⚙</span>管理</button>
     </nav>
@@ -192,9 +203,9 @@
     <form id="join-form" class="modal-card join-card">
       <span class="modal-suit">♠</span>
       <p class="section-kicker">PRIVATE INVITATION</p>
-      <h2>你收到一张牌桌邀请</h2>
+      <h2 id="join-title">你收到一张牌桌邀请</h2>
       <div id="seat-step">
-        <p>先选择一个空位，选好后再填写入座信息。</p>
+        <p id="join-subtitle">先选择一个空位，选好后再填写入座信息。</p>
         <div class="seat-picker">
           <div class="seat-picker-table"><span>RIVER CLUB</span><small id="seat-room-code">PRIVATE TABLE</small></div>
           <div id="seat-options"></div>

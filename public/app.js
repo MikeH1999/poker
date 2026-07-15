@@ -14,7 +14,7 @@ const els = {
   landing: $("#landing"), room: $("#room"), joinModal: $("#join-modal"),
   name: $("#player-name"), joinName: $("#join-name"), roomCode: $("#room-code"),
   seats: $("#seats"), community: $("#community-cards"), myCards: $("#my-cards"),
-  playerList: $("#player-list"), messages: $("#message-list"), pot: $("#pot strong"),
+  playerList: $("#player-list"), messages: $("#message-list"), activity: $("#activity-list"), pot: $("#pot strong"),
   start: $("#start-hand"), waiting: $("#waiting-actions"), betActions: $("#bet-actions"),
   result: $("#result-banner"), raiseRange: $("#raise-range"), raiseAmount: $("#raise-amount"),
   adminModal: $("#admin-modal"), adminPlayers: $("#admin-player-list"), sidebar: $("#sidebar"),
@@ -78,6 +78,10 @@ $("#join-form").addEventListener("submit", async (event) => {
 async function joinRoom(name = storedName(), points = $("#join-points").value, seat = selectedSeat) {
   const response = await emit("room:join", { roomId, name, points, seat, token: localStorage.getItem(tokenKey(roomId)) });
   if (!response.ok) {
+    if (response.needsSeat) {
+      openSeatModal("reseat");
+      return false;
+    }
     if (response.error.includes("房间不存在")) { toast(response.error); setTimeout(() => location.href = "/", 1400); }
     else {
       toast(response.error);
@@ -94,6 +98,16 @@ async function joinRoom(name = storedName(), points = $("#join-points").value, s
   els.joinModal.classList.add("hidden");
   me = response.playerId;
   return true;
+}
+
+function openSeatModal(mode = "invite") {
+  selectedSeat = null;
+  $("#join-title").textContent = mode === "reseat" ? "重新坐下" : "你收到一张牌桌邀请";
+  $("#join-subtitle").textContent = mode === "reseat" ? "你的积分已用完，请重新选择座位并设置本次积分。" : "先选择一个空位，选好后再填写入座信息。";
+  $("#join-details").classList.add("hidden");
+  $("#seat-step").classList.remove("hidden");
+  els.joinModal.classList.remove("hidden");
+  loadRoomPreview();
 }
 
 async function loadRoomPreview() {
@@ -148,10 +162,7 @@ if (roomId) {
   showRoom();
   const token = localStorage.getItem(tokenKey(roomId));
   if (token) joinRoom();
-  else {
-    els.joinModal.classList.remove("hidden");
-    loadRoomPreview();
-  }
+  else openSeatModal("invite");
 }
 
 socket.on("connect", () => {
@@ -161,7 +172,7 @@ socket.on("connect", () => {
 socket.on("room:state", (nextState) => {
   serverClockOffset = (nextState.serverTime || Date.now()) - Date.now();
   state = nextState;
-  if (!me) me = state.players.find((p) => p.cards?.length)?.id || state.players.find((p) => p.name === storedName())?.id;
+  if (!me) me = state.viewer?.id || state.players.find((p) => p.cards?.length)?.id || state.players.find((p) => p.name === storedName())?.id;
   render();
 });
 
@@ -169,6 +180,7 @@ function render() {
   const player = state.players.find((p) => p.id === me);
   const hand = state.hand;
   const isHost = me === state.hostId;
+  const needsReseat = Boolean(state.viewer && !state.viewer.seated);
   els.room.classList.toggle("is-paused", state.paused);
   $("#room-id").textContent = state.id;
   $("#player-count").textContent = state.players.filter((p) => p.connected).length;
@@ -187,11 +199,15 @@ function render() {
   $$(".host-only").forEach((element) => element.classList.toggle("hidden", !isHost));
   $("#away-toggle").textContent = player?.away ? "我回来了" : "暂时离座";
   $("#away-toggle").classList.toggle("active", Boolean(player?.away));
+  $("#away-toggle").classList.toggle("hidden", needsReseat);
   $("#mobile-away").innerHTML = `<span>↗</span>${player?.away ? "回来" : "离座"}`;
+  $("#mobile-away").classList.toggle("hidden", needsReseat);
   $("#pause-game").textContent = state.paused ? "恢复" : "暂停";
   $("#pause-game").classList.toggle("active", state.paused);
   els.start.classList.toggle("hidden", !canStart);
-  els.waiting.classList.toggle("hidden", canStart || isMyTurn);
+  $("#reseat-player").classList.toggle("hidden", !needsReseat);
+  $("#reseat-count").textContent = `本房间已重新坐下 ${state.viewer?.rejoinCount || 0} 次`;
+  els.waiting.classList.toggle("hidden", canStart || isMyTurn || needsReseat);
   els.betActions.classList.toggle("hidden", !isMyTurn);
   if (!canStart && !isMyTurn) els.waiting.textContent = state.paused ? "牌桌已由房主暂停" : state.nextHandAt ? "结算展示中，下一手将在 5 秒后自动开始" : hand?.runout ? "All-in 跑牌中，公共牌将逐张发出" : player?.away ? "你已暂时离座，返回后从下一手加入" : hand ? `等待 ${state.players.find((p) => p.id === hand.actionPlayerId)?.name || "牌局"} 操作` : "等待房主开始下一手";
 
@@ -206,17 +222,22 @@ function renderSeats() {
   els.seats.innerHTML = state.players.map((player) => {
     const cards = player.cards?.length ? player.cards.map(cardHTML).join("") : player.cardCount ? `${cardHTML(null)}${cardHTML(null)}` : "";
     const winner = Boolean(state.hand?.result?.winnerIds?.includes(player.id));
+    const equity = state.hand?.equities?.[player.id];
     return `<div class="seat ${player.isTurn ? "turn" : ""} ${player.folded ? "folded" : ""} ${player.away ? "away" : ""} ${winner ? "winner" : ""} ${player.id === me ? "own" : ""}" data-pos="${player.seat}">
       <div class="seat-cards">${cards}</div>
+      ${player.folded ? '<div class="folded-tag">已弃牌</div>' : ""}
       <div class="avatar">${escapeHTML(player.name[0]?.toUpperCase() || "P")}</div>
       <div class="seat-box">
-        <div class="seat-name">${escapeHTML(player.name)} ${state.hand?.dealerId === player.id ? '<span class="dealer-chip">D</span>' : ""}</div>
+        <div class="seat-name">${escapeHTML(player.name)} ${state.hand?.dealerId === player.id ? '<span class="dealer-chip">D</span>' : ""}${player.rejoinCount ? `<span class="reseat-tag">重坐 ×${player.rejoinCount}</span>` : ""}</div>
         <div class="seat-points">◆ ${player.points.toLocaleString()}</div>
+        ${equity !== undefined ? `<div class="equity-badge"><span>胜率</span><strong>${equity}%</strong></div>` : ""}
       </div>
       ${player.bet ? `<div class="seat-bet"><span>下注</span><strong>${player.bet}</strong></div>` : ""}
     </div>`;
   }).join("");
 }
+
+$("#reseat-player").addEventListener("click", () => openSeatModal("reseat"));
 
 function renderPlayers() {
   els.playerList.innerHTML = [...state.players].sort((a,b) => a.seat-b.seat).map((player) => `<div class="player-row">
@@ -227,10 +248,17 @@ function renderPlayers() {
 }
 
 function renderMessages() {
-  els.messages.innerHTML = state.messages.map((msg) => msg.type === "chat"
-    ? `<div class="message"><strong>${escapeHTML(msg.name)}</strong>${escapeHTML(msg.text)}</div>`
-    : `<div class="message system">${escapeHTML(msg.text)}</div>`).join("");
+  const chats = state.messages.filter((message) => message.type === "chat");
+  const activity = state.messages.filter((message) => message.type === "system");
+  $("#chat-count").textContent = chats.length;
+  els.messages.innerHTML = chats.length
+    ? chats.map((msg) => `<div class="message chat-message"><strong>${escapeHTML(msg.name)}</strong>${escapeHTML(msg.text)}</div>`).join("")
+    : '<div class="empty-feed">还没有聊天消息</div>';
+  els.activity.innerHTML = activity.length
+    ? activity.map((msg) => `<div class="message system">${escapeHTML(msg.text)}</div>`).join("")
+    : '<div class="empty-feed">牌局开始后，操作记录会显示在这里</div>';
   els.messages.scrollTop = els.messages.scrollHeight;
+  els.activity.scrollTop = els.activity.scrollHeight;
 }
 
 function renderCards(container, cards) { container.innerHTML = cards.map(cardHTML).join(""); }
@@ -397,11 +425,26 @@ els.adminPlayers.addEventListener("change", async (event) => {
   await savePlayerPoints(event.target.closest(".admin-player"));
 });
 
+function switchSideTab(tabName) {
+  $$('[data-side-tab]').forEach((button) => button.classList.toggle("active", button.dataset.sideTab === tabName));
+  $("#players-pane").classList.toggle("hidden", tabName !== "players");
+  $("#chat-pane").classList.toggle("hidden", tabName !== "chat");
+  $("#activity-pane").classList.toggle("hidden", tabName !== "activity");
+  if (tabName === "chat") requestAnimationFrame(() => { els.messages.scrollTop = els.messages.scrollHeight; });
+  if (tabName === "activity") requestAnimationFrame(() => { els.activity.scrollTop = els.activity.scrollHeight; });
+}
+
+$$('[data-side-tab]').forEach((button) => button.addEventListener("click", () => switchSideTab(button.dataset.sideTab)));
+
 $$('[data-mobile-panel]').forEach((button) => button.addEventListener("click", () => {
   $$('[data-mobile-panel]').forEach((item) => item.classList.toggle("active", item === button));
   const open = button.dataset.mobilePanel !== "table";
   els.sidebar.classList.toggle("open", open);
-  if (button.dataset.mobilePanel === "chat") requestAnimationFrame(() => { els.messages.scrollTop = els.messages.scrollHeight; $("#chat-input").focus(); });
+  if (button.dataset.mobilePanel === "players") switchSideTab("players");
+  if (button.dataset.mobilePanel === "chat") {
+    switchSideTab("chat");
+    requestAnimationFrame(() => { $("#chat-input").focus(); });
+  }
 }));
 $("#close-sidebar").addEventListener("click", () => {
   els.sidebar.classList.remove("open");
