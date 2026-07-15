@@ -2450,4 +2450,4 @@ function requireHost(room, player) {
   if (room.hostId !== player.id) throw new Error("只有房主可以执行此操作");
 }
 
-httpServer.listen(PORT, () => console.log(`River Club running at http://localhost:${PORT}`));
+httpServer.listen(PORT, () => console.log(`坪石镇娱乐中心 running at http://localhost:${PORT}`));
