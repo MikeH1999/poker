@@ -6,6 +6,7 @@ let roomId = roomMatch?.[1]?.toUpperCase() || null;
 let state = null;
 let me = null;
 let toastTimer;
+let lastCommunityKeys = [];
 
 const els = {
   landing: $("#landing"), room: $("#room"), joinModal: $("#join-modal"),
@@ -70,8 +71,8 @@ $("#join-form").addEventListener("submit", async (event) => {
   await joinRoom(name);
 });
 
-async function joinRoom(name = storedName()) {
-  const response = await emit("room:join", { roomId, name, token: localStorage.getItem(tokenKey(roomId)) });
+async function joinRoom(name = storedName(), points = $("#join-points").value) {
+  const response = await emit("room:join", { roomId, name, points, token: localStorage.getItem(tokenKey(roomId)) });
   if (!response.ok) {
     if (response.error.includes("房间不存在")) { toast(response.error); setTimeout(() => location.href = "/", 1400); }
     else toast(response.error);
@@ -93,7 +94,7 @@ function showRoom() {
 if (roomId) {
   showRoom();
   const token = localStorage.getItem(tokenKey(roomId));
-  if (token || storedName()) joinRoom();
+  if (token) joinRoom();
   else els.joinModal.classList.remove("hidden");
 }
 
@@ -117,8 +118,9 @@ function render() {
   $("#hand-number").textContent = state.handNumber ? `HAND #${String(state.handNumber).padStart(3,"0")} · ${phaseName(hand?.phase)}` : "等待开局";
   $("#blind-info").textContent = `盲注 ${state.settings.smallBlind}/${state.settings.bigBlind}`;
   els.pot.textContent = hand?.pot || 0;
-  renderCards(els.community, hand?.community || []);
+  renderCommunity(hand?.community || []);
   renderCards(els.myCards, player?.cards || []);
+  $("#my-hand-rank strong").textContent = player?.handName || "等待发牌";
   renderSeats();
   renderPlayers();
   renderMessages();
@@ -134,7 +136,7 @@ function render() {
   els.start.classList.toggle("hidden", !canStart);
   els.waiting.classList.toggle("hidden", canStart || isMyTurn);
   els.betActions.classList.toggle("hidden", !isMyTurn);
-  if (!canStart && !isMyTurn) els.waiting.textContent = state.paused ? "牌桌已由房主暂停" : player?.away ? "你已暂时离座，返回后从下一手加入" : hand ? `等待 ${state.players.find((p) => p.id === hand.actionPlayerId)?.name || "牌局"} 操作` : "等待房主开始下一手";
+  if (!canStart && !isMyTurn) els.waiting.textContent = state.paused ? "牌桌已由房主暂停" : state.nextHandAt ? "结算展示中，下一手将在 5 秒后自动开始" : hand?.runout ? "All-in 跑牌中，公共牌将逐张发出" : player?.away ? "你已暂时离座，返回后从下一手加入" : hand ? `等待 ${state.players.find((p) => p.id === hand.actionPlayerId)?.name || "牌局"} 操作` : "等待房主开始下一手";
 
   els.result.classList.toggle("hidden", !hand?.result);
   if (hand?.result) els.result.textContent = hand.result.text;
@@ -173,10 +175,20 @@ function renderMessages() {
 }
 
 function renderCards(container, cards) { container.innerHTML = cards.map(cardHTML).join(""); }
-function cardHTML(card) {
+function renderCommunity(cards) {
+  const previous = new Set(lastCommunityKeys);
+  const keys = cards.map((card) => `${card.rank}${card.suit}`);
+  els.community.innerHTML = cards.map((card, index) => cardHTML(card, {
+    animate: !previous.has(keys[index]),
+    index,
+  })).join("");
+  lastCommunityKeys = keys;
+}
+function cardHTML(card, options = {}) {
   if (!card) return '<div class="card back"></div>';
   const red = card.suit === "h" || card.suit === "d";
-  return `<div class="card ${red ? "red" : ""}">${rankName(card.rank)}<small>${suitName(card.suit)}</small></div>`;
+  const animation = options.animate ? ` dealing" style="--deal-index:${options.index || 0}` : "";
+  return `<div class="card ${red ? "red" : ""}${animation}">${rankName(card.rank)}<small>${suitName(card.suit)}</small></div>`;
 }
 function rankName(rank) { return rank === "T" ? "10" : rank; }
 function suitName(suit) { return ({s:"♠",h:"♥",d:"♦",c:"♣"})[suit]; }
@@ -207,6 +219,8 @@ function renderAdmin() {
   $("#admin-bb").value = state.settings.bigBlind;
   $("#admin-pause").textContent = state.paused ? "恢复游戏" : "暂停游戏";
   $("#admin-pause").classList.toggle("active", state.paused);
+  $("#auto-start").textContent = `自动开始：${state.settings.autoStartNextHand ? "开" : "关"}`;
+  $("#auto-start").classList.toggle("active", state.settings.autoStartNextHand);
   $("#admin-start").disabled = state.paused || Boolean(state.hand && !state.hand.result);
   els.adminPlayers.innerHTML = [...state.players].sort((a,b) => a.seat-b.seat).map((player) => `<div class="admin-player" data-player-id="${player.id}">
     <div class="admin-player-main"><div class="avatar">${escapeHTML(player.name[0]?.toUpperCase() || "P")}</div><div><strong>${escapeHTML(player.name)}${player.id === me ? "（你）" : ""}</strong><span>${player.away ? "暂时离座" : player.connected ? player.status : "已离线"}</span></div></div>
@@ -244,6 +258,11 @@ $("#away-toggle").addEventListener("click", toggleAway);
 $("#mobile-away").addEventListener("click", toggleAway);
 $("#pause-game").addEventListener("click", togglePause);
 $("#admin-pause").addEventListener("click", togglePause);
+$("#auto-start").addEventListener("click", async () => {
+  const response = await emit("host:auto-start", { enabled: !state.settings.autoStartNextHand });
+  if (!response.ok) toast(response.error);
+  else toast(state.settings.autoStartNextHand ? "已关闭自动开始下一手" : "已开启，结算 5 秒后自动发牌");
+});
 
 function openAdmin() {
   renderAdmin();

@@ -47,11 +47,14 @@ function createRoom(ownerName, settings = {}) {
     players: [],
     messages: [],
     paused: false,
+    autoStartTimer: null,
+    nextHandAt: null,
     settings: {
-      startingPoints: clamp(settings.startingPoints, 500, 100000, 3000),
+      startingPoints: clamp(settings.startingPoints, 100, 100000, 1000),
       smallBlind: clamp(settings.smallBlind, 5, 1000, 10),
       bigBlind: clamp(settings.bigBlind, 10, 2000, 20),
       maxPlayers: clamp(settings.maxPlayers, 2, 8, 8),
+      autoStartNextHand: Boolean(settings.autoStartNextHand),
     },
     hand: null,
     dealerSeat: -1,
@@ -69,7 +72,7 @@ function clamp(value, min, max, fallback) {
   return Math.min(max, Math.max(min, Math.round(number)));
 }
 
-function addPlayer(room, name) {
+function addPlayer(room, name, requestedPoints) {
   const taken = new Set(room.players.map((p) => p.seat));
   let seat = 0;
   while (taken.has(seat)) seat += 1;
@@ -79,7 +82,7 @@ function addPlayer(room, name) {
     socketId: null,
     name: cleanName(name),
     seat,
-    points: room.settings.startingPoints,
+    points: clamp(requestedPoints, 100, 100000, room.settings.startingPoints),
     connected: true,
     holeCards: [],
     folded: false,
@@ -99,6 +102,7 @@ function publicState(room, viewerId) {
     id: room.id,
     hostId: room.hostId,
     paused: room.paused,
+    nextHandAt: room.nextHandAt,
     settings: room.settings,
     handNumber: room.handNumber,
     players: room.players.map((player) => ({
@@ -114,6 +118,7 @@ function publicState(room, viewerId) {
       isTurn: Boolean(hand && hand.actionPlayerId === player.id),
       cards: player.id === viewerId ? player.holeCards : hand?.revealed?.[player.id] || [],
       cardCount: hand ? player.holeCards.length : 0,
+      handName: player.id === viewerId || hand?.revealed?.[player.id] ? describeHand(player, hand) : null,
     })),
     hand: hand ? {
       phase: hand.phase,
@@ -126,6 +131,7 @@ function publicState(room, viewerId) {
       smallBlindId: hand.smallBlindId,
       bigBlindId: hand.bigBlindId,
       result: hand.result,
+      runout: Boolean(hand.runout),
     } : null,
     messages: room.messages.slice(-40),
   };
@@ -162,6 +168,7 @@ function takeBet(player, amount) {
 }
 
 function startHand(room) {
+  clearAutoStart(room);
   const active = seated(room);
   if (active.length < 2) throw new Error("至少需要 2 位有积分的在线玩家");
   room.handNumber += 1;
@@ -194,11 +201,13 @@ function startHand(room) {
     actionPlayerId: null,
     result: null,
     revealed: {},
+    runout: false,
   };
-  const firstIndex = active.length === 2 ? dealerIndex : bigBlindIndex;
-  const first = nextFrom(active, firstIndex, (p) => !p.folded && p.points > 0);
-  room.hand.actionPlayerId = first?.player.id || null;
-  if (first) first.player.status = "轮到你";
+  const firstPlayer = active.length === 2
+    ? active[dealerIndex]
+    : nextFrom(active, bigBlindIndex, (p) => !p.folded && p.points > 0)?.player;
+  room.hand.actionPlayerId = firstPlayer?.id || null;
+  if (firstPlayer) firstPlayer.status = "轮到你";
   systemMessage(room, `第 ${room.handNumber} 手开始，盲注 ${room.settings.smallBlind}/${room.settings.bigBlind}`);
 }
 
@@ -301,18 +310,62 @@ function progressHand(room, currentId) {
     return;
   }
 
-  advanceStreet(room);
-  if (contenders(room).every((p) => p.points === 0)) {
-    while (room.hand.phase !== "river") advanceStreet(room, true);
-    showdown(room);
+  if (alive.filter((player) => player.points > 0).length <= 1) {
+    scheduleRunout(room);
     return;
   }
+
+  advanceStreet(room);
 
   const ordered = room.players.filter((p) => p.holeCards.length).sort((a, b) => a.seat - b.seat);
   const dealerIndex = ordered.findIndex((p) => p.id === hand.dealerId);
   const first = nextFrom(ordered, dealerIndex, (p) => !p.folded && p.points > 0)?.player;
   hand.actionPlayerId = first?.id || null;
   if (first) first.status = "轮到你";
+}
+
+function scheduleRunout(room) {
+  const hand = room.hand;
+  if (!hand || hand.result || hand.runout) return;
+  hand.runout = true;
+  hand.actionPlayerId = null;
+  for (const player of contenders(room)) player.status = "等待逐张跑牌";
+
+  const tasks = [];
+  if (hand.phase === "preflop") {
+    tasks.push(
+      { phase: "flop", burn: true, announce: "翻牌" },
+      { phase: "flop" },
+      { phase: "flop" },
+    );
+  }
+  if (hand.phase === "preflop" || hand.phase === "flop") tasks.push({ phase: "turn", burn: true, announce: "转牌" });
+  if (hand.phase !== "river") tasks.push({ phase: "river", burn: true, announce: "河牌" });
+
+  let index = 0;
+  const revealNext = () => {
+    if (room.hand !== hand || hand.result) return;
+    if (room.paused) {
+      hand.runoutTimer = setTimeout(revealNext, 300);
+      return;
+    }
+    const task = tasks[index];
+    if (!task) {
+      showdown(room);
+      broadcast(room);
+      return;
+    }
+    if (task.burn) hand.deck.pop();
+    hand.phase = task.phase;
+    hand.community.push(hand.deck.pop());
+    if (task.announce) systemMessage(room, task.announce);
+    index += 1;
+    broadcast(room);
+    hand.runoutTimer = setTimeout(revealNext, 850);
+  };
+
+  systemMessage(room, "All-in，公共牌将逐张发出");
+  hand.runoutTimer = setTimeout(revealNext, 600);
 }
 
 function advanceStreet(room, runout = false) {
@@ -348,11 +401,19 @@ function showdown(room) {
   const levels = [...new Set(room.players.map((p) => p.totalBet).filter(Boolean))].sort((a, b) => a - b);
   let previous = 0;
   const winIds = new Set();
-  const summaries = [];
+  const payouts = new Map();
 
   for (const level of levels) {
     const contributors = room.players.filter((p) => p.totalBet >= level);
     const pot = (level - previous) * contributors.length;
+    if (contributors.length === 1) {
+      const uncalled = level - previous;
+      contributors[0].points += uncalled;
+      contributors[0].totalBet -= uncalled;
+      systemMessage(room, `${contributors[0].name} 收回未被跟注的 ${uncalled} 积分`);
+      previous = level;
+      continue;
+    }
     const eligible = alive.filter((p) => p.totalBet >= level);
     if (!eligible.length) continue;
     eligible.sort((a, b) => compareScore(scores.get(b.id), scores.get(a.id)));
@@ -361,12 +422,17 @@ function showdown(room) {
     const share = Math.floor(pot / winners.length);
     let remainder = pot - share * winners.length;
     for (const winner of winners) {
-      winner.points += share + (remainder-- > 0 ? 1 : 0);
+      const awarded = share + (remainder-- > 0 ? 1 : 0);
+      winner.points += awarded;
+      payouts.set(winner.id, (payouts.get(winner.id) || 0) + awarded);
       winIds.add(winner.id);
     }
-    summaries.push(`${winners.map((p) => p.name).join("、")} 以${best.name}赢得 ${pot}`);
     previous = level;
   }
+  const summaries = [...payouts].map(([playerId, amount]) => {
+    const player = room.players.find((candidate) => candidate.id === playerId);
+    return `${player.name} 以${scores.get(playerId).name}赢得 ${amount}`;
+  });
   finishHand(room, summaries.join("；"), [...winIds]);
 }
 
@@ -378,6 +444,45 @@ function finishHand(room, text, winnerIds) {
     player.status = player.away ? "暂时离座" : winnerIds.includes(player.id) ? "本手获胜" : "等待下一手";
   }
   systemMessage(room, text);
+  scheduleAutoStart(room);
+}
+
+function clearAutoStart(room) {
+  if (room.autoStartTimer) clearTimeout(room.autoStartTimer);
+  room.autoStartTimer = null;
+  room.nextHandAt = null;
+}
+
+function scheduleAutoStart(room) {
+  clearAutoStart(room);
+  if (!room.settings.autoStartNextHand || room.paused || !room.hand?.result) return;
+  room.nextHandAt = Date.now() + 5000;
+  systemMessage(room, "已开启自动发牌，5 秒后开始下一手");
+  room.autoStartTimer = setTimeout(() => {
+    room.autoStartTimer = null;
+    room.nextHandAt = null;
+    if (!room.settings.autoStartNextHand || room.paused || !room.hand?.result) return;
+    try {
+      startHand(room);
+    } catch (error) {
+      systemMessage(room, `自动发牌等待中：${error.message}`);
+    }
+    broadcast(room);
+  }, 5000);
+}
+
+function describeHand(player, hand) {
+  if (!hand || player.holeCards.length !== 2) return null;
+  const cards = [...player.holeCards, ...hand.community];
+  if (cards.length >= 5) return evaluateSeven(cards).name;
+  if (hand.community.length > 0) return "等待完整翻牌";
+  if (player.holeCards[0].rank === player.holeCards[1].rank) return `口袋对${displayRank(player.holeCards[0].rank)}`;
+  const high = player.holeCards.reduce((best, card) => ranks.indexOf(card.rank) > ranks.indexOf(best.rank) ? card : best);
+  return `${displayRank(high.rank)} 高牌`;
+}
+
+function displayRank(rank) {
+  return ({ T: "10", J: "J", Q: "Q", K: "K", A: "A" })[rank] || rank;
 }
 
 function evaluateSeven(cards) {
@@ -432,7 +537,7 @@ io.on("connection", (socket) => {
     } catch (error) { reply({ ok: false, error: error.message }); }
   });
 
-  socket.on("room:join", ({ roomId: rawId, name, token }, reply = () => {}) => {
+  socket.on("room:join", ({ roomId: rawId, name, token, points }, reply = () => {}) => {
     try {
       const id = String(rawId || "").toUpperCase();
       const room = rooms.get(id);
@@ -441,7 +546,7 @@ io.on("connection", (socket) => {
       if (!player) {
         if (room.players.length >= room.settings.maxPlayers) throw new Error("房间已满");
         if (room.hand && !room.hand.result) throw new Error("本手进行中，请在下一手加入");
-        player = addPlayer(room, name);
+        player = addPlayer(room, name, points);
         systemMessage(room, `${player.name} 加入了牌桌`);
       }
       player.socketId = socket.id;
@@ -481,6 +586,8 @@ io.on("connection", (socket) => {
       const { room, player } = identify(socket);
       requireHost(room, player);
       room.paused = Boolean(paused);
+      if (room.paused) clearAutoStart(room);
+      else scheduleAutoStart(room);
       systemMessage(room, `${player.name} ${room.paused ? "暂停了牌桌" : "恢复了牌桌"}`);
       broadcast(room);
       reply({ ok: true });
@@ -558,6 +665,19 @@ io.on("connection", (socket) => {
       room.settings.smallBlind = sb;
       room.settings.bigBlind = bb;
       systemMessage(room, `${host.name} 将盲注调整为 ${sb}/${bb}`);
+      broadcast(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("host:auto-start", ({ enabled }, reply = () => {}) => {
+    try {
+      const { room, player: host } = identify(socket);
+      requireHost(room, host);
+      room.settings.autoStartNextHand = Boolean(enabled);
+      if (room.settings.autoStartNextHand) scheduleAutoStart(room);
+      else clearAutoStart(room);
+      systemMessage(room, `${host.name} ${room.settings.autoStartNextHand ? "开启" : "关闭"}了自动开始下一手`);
       broadcast(room);
       reply({ ok: true });
     } catch (error) { reply({ ok: false, error: error.message }); }

@@ -51,7 +51,7 @@
           <button id="create-room" class="primary-btn"><span>创建私人牌桌</span><b>→</b></button>
           <button id="settings-toggle" class="text-btn">自定义盲注与起始积分 <span>⌄</span></button>
           <div id="settings" class="settings hidden">
-            <label>起始积分 <input id="starting-points" type="number" min="500" max="100000" value="3000" /></label>
+            <label>起始积分 <input id="starting-points" type="number" min="100" max="100000" value="1000" /></label>
             <label>小盲 <input id="small-blind" type="number" min="5" value="10" /></label>
             <label>大盲 <input id="big-blind" type="number" min="10" value="20" /></label>
             <label>人数上限 <input id="max-players" type="number" min="2" max="8" value="8" /></label>
@@ -113,6 +113,7 @@
 
         <div id="action-panel" class="action-panel">
           <div class="my-cards-block"><span>你的底牌</span><div id="my-cards" class="my-cards"></div></div>
+          <div id="my-hand-rank" class="hand-rank"><small>当前牌型</small><strong>等待发牌</strong></div>
           <div id="waiting-actions" class="waiting-actions">等待房主开始下一手</div>
           <div id="bet-actions" class="bet-actions hidden">
             <button data-action="fold" class="action-btn danger">弃牌</button>
@@ -167,8 +168,9 @@
           <button id="save-blinds" class="admin-primary">保存盲注</button>
         </div>
         <div class="setting-block">
-          <div><span class="setting-index">03</span><h3>继续发牌</h3><p>牌局结束后由房主决定何时开始下一手。</p></div>
-          <button id="admin-start" class="admin-primary">开始下一手</button>
+          <div><span class="setting-index">03</span><h3>下一手</h3><p>可以手动发牌，或在结算展示 5 秒后自动开始。</p></div>
+          <button id="auto-start" class="switch-button">自动开始：关</button>
+          <button id="admin-start" class="admin-primary">手动开始</button>
         </div>
       </div>
       <div id="admin-players" class="admin-pane hidden">
@@ -186,6 +188,8 @@
       <p>输入昵称即可入座，无需注册。</p>
       <label class="field-label" for="join-name">你的昵称</label>
       <div class="input-shell"><span>◎</span><input id="join-name" maxlength="16" placeholder="例如：河牌老王" autocomplete="nickname" /></div>
+      <label class="field-label" for="join-points">入座积分</label>
+      <div class="input-shell"><span>◆</span><input id="join-points" type="number" min="100" max="100000" value="1000" inputmode="numeric" /></div>
       <button class="primary-btn" type="submit">加入牌桌 <b>→</b></button>
     </form>
   </div>
