@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#171916" />
+  <title>斗地主 · River Club</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;900&family=Noto+Sans+SC:wght@400;600;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/niuniu.css" />
+  <link rel="stylesheet" href="/doudizhu.css" />
+</head>
+<body>
+  <header class="niu-header">
+    <a class="niu-brand" href="/"><span>R</span><div>RIVER <b>CLUB</b><small>GAME COLLECTION</small></div></a>
+    <div class="niu-title">斗地主</div>
+    <button id="ddz-rules-button" class="outline-button">游戏规则</button>
+  </header>
+
+  <main id="ddz-lobby" class="niu-lobby ddz-lobby">
+    <section class="niu-hero">
+      <div class="hero-copy">
+        <p>GAME 04 · FIGHT THE LANDLORD</p>
+        <h1>三人成局，<br /><em>谁来当地主？</em></h1>
+        <span>叫分争地主，三张底牌定乾坤。农民并肩作战，炸弹与王炸让倍数节节攀升。</span>
+        <div class="rule-chips"><i>三人经典局</i><i>0–3 分叫地主</i><i>炸弹翻倍</i></div>
+      </div>
+      <form id="ddz-create-form" class="create-card">
+        <div class="create-head"><span>CREATE A TABLE</span><h2>创建斗地主房间</h2></div>
+        <label>你的昵称<input id="ddz-create-name" maxlength="16" placeholder="例如：欢乐地主" required /></label>
+        <div class="form-grid">
+          <label>起始积分<input id="ddz-starting-points" type="number" min="100" max="100000" value="1000" /></label>
+          <label>游戏底分<input id="ddz-base-score" type="number" min="1" max="10000" value="10" /></label>
+          <label>固定人数<input type="text" value="3 人" disabled /></label>
+          <label>行动时间（秒）<input id="ddz-decision-time" type="number" min="5" max="120" value="30" /></label>
+        </div>
+        <button class="primary-button" type="submit">创建私人房间 <b>→</b></button>
+        <p>纯娱乐积分，无充值、提现或现金价值。</p>
+      </form>
+    </section>
+  </main>
+
+  <main id="ddz-room" class="ddz-room hidden">
+    <div class="room-toolbar">
+      <a class="mini-brand" href="/"><span>R</span></a>
+      <div class="room-code">斗地主房间 <strong id="ddz-room-id">—</strong></div>
+      <div class="toolbar-actions">
+        <button id="ddz-away" class="outline-button">暂时离座</button>
+        <button id="ddz-pause" class="outline-button host-only hidden">暂停</button>
+        <button id="ddz-auto-start" class="outline-button host-only hidden">自动下一局：关</button>
+        <button id="ddz-manage" class="outline-button host-only hidden">玩家管理</button>
+        <button id="ddz-copy" class="outline-button">复制邀请链接</button>
+      </div>
+    </div>
+    <div class="ddz-game-layout">
+      <section class="ddz-table-zone">
+        <div class="ddz-round-info"><span id="ddz-round">等待开局</span><span id="ddz-base-info">底分 10</span><span id="ddz-multiplier">倍数 ×1</span></div>
+        <div class="ddz-table">
+          <div class="ddz-felt-line"></div>
+          <div id="ddz-seats"></div>
+          <div class="ddz-center">
+            <small id="ddz-phase-label">斗地主</small>
+            <div id="ddz-bottom-cards" class="ddz-bottom-cards"></div>
+            <strong id="ddz-center-title">等待房主开始</strong>
+            <div id="ddz-last-play" class="ddz-last-play"></div>
+            <span id="ddz-center-message">凑齐三人即可开局</span>
+          </div>
+        </div>
+        <div class="ddz-hand-area">
+          <div id="ddz-own-cards" class="ddz-own-cards"></div>
+          <div class="ddz-controls">
+            <div id="ddz-action-message" class="ddz-action-message">等待房主开始</div>
+            <div id="ddz-turn-timer" class="ddz-turn-timer hidden"><span>行动剩余</span><strong>30</strong><i></i></div>
+            <div id="ddz-bid-actions" class="ddz-bid-actions hidden"><button data-bid="0">不叫</button><button data-bid="1">1 分</button><button data-bid="2">2 分</button><button data-bid="3">3 分</button></div>
+            <div id="ddz-play-actions" class="ddz-play-actions hidden"><button id="ddz-clear">重选</button><button id="ddz-pass">不出</button><button id="ddz-play" class="primary">出牌</button></div>
+            <button id="ddz-start" class="primary-button room-start hidden">开始发牌 <b>→</b></button>
+            <button id="ddz-reseat" class="primary-button room-start hidden">重新坐下 <b>↻</b></button>
+          </div>
+        </div>
+      </section>
+      <aside id="ddz-sidebar" class="niu-sidebar">
+        <button id="ddz-close-sidebar" class="close-side">关闭 ×</button>
+        <div class="niu-tabs"><button data-ddz-tab="chat" class="active">聊天 <span id="ddz-chat-count">0</span></button><button data-ddz-tab="players">玩家 <span id="ddz-player-count">0</span></button><button data-ddz-tab="activity">牌局动态</button></div>
+        <div id="ddz-chat-pane" class="niu-pane chat-pane"><div id="ddz-chat-list" class="niu-feed"></div><form id="ddz-chat-form"><input id="ddz-chat-input" maxlength="160" placeholder="说点什么…" /><button>↑</button></form></div>
+        <div id="ddz-players-pane" class="niu-pane hidden"><div id="ddz-player-list"></div></div>
+        <div id="ddz-activity-pane" class="niu-pane hidden"><div id="ddz-activity-list" class="niu-feed"></div></div>
+      </aside>
+    </div>
+    <nav class="niu-mobile-dock"><button data-ddz-mobile="table" class="active">♠<small>牌桌</small></button><button data-ddz-mobile="chat">◇<small>聊天</small></button><button data-ddz-mobile="players">◎<small>玩家</small></button><button id="ddz-mobile-away">↗<small>离座</small></button><button id="ddz-mobile-manage" class="host-only hidden">⚙<small>管理</small></button></nav>
+  </main>
+
+  <div id="ddz-join-modal" class="niu-modal hidden"><form id="ddz-join-form" class="niu-modal-card join-modal-card"><button id="ddz-close-join" class="modal-close" type="button">×</button><p>SELECT YOUR SEAT</p><h2>选择斗地主座位</h2><div id="ddz-seat-step"><div class="ddz-seat-picker"><div class="ddz-picker-felt">斗<small id="ddz-picker-code">ROOM</small></div><div id="ddz-seat-options"></div></div><span id="ddz-seat-status">读取座位中…</span></div><div id="ddz-join-details" class="hidden"><button id="ddz-back-seats" type="button" class="link-button">← 重新选座</button><div class="selected-seat">已选择 <strong id="ddz-selected-seat">—</strong> 号座位</div><label>昵称<input id="ddz-join-name" maxlength="16" required /></label><label>入座积分<input id="ddz-join-points" type="number" min="10" max="100000" value="1000" /></label><button class="primary-button" type="submit">确认入座 <b>→</b></button></div></form></div>
+
+  <div id="ddz-rules" class="niu-modal hidden"><section class="niu-modal-card rules-card ddz-rules-card"><button id="ddz-close-rules" class="modal-close">×</button><p>HOW TO PLAY</p><h2>经典斗地主规则</h2><h3>开局与叫地主</h3><ol><li>固定三人，使用含大小王的 54 张牌；每人 17 张，剩余 3 张为底牌。</li><li>随机一人首先叫分，可选择不叫或叫 1/2/3 分。后叫者必须高于当前最高分；3 分立即成为地主。</li><li>三人均不叫则重新发牌。地主获得三张底牌并首先出牌，另外两人为农民。</li></ol><h3>牌型</h3><p>支持单张、对子、三张、三带一、三带一对、顺子、连对、飞机、飞机带翅膀、四带二、炸弹和王炸。顺子、连对和飞机不能包含 2 或大小王。</p><h3>比较与结算</h3><p>同类、同长度牌型比较主点数；炸弹可压普通牌，王炸最大。连续两家不出后由上一手玩家重新领出。地主先出完则地主获胜，否则农民共同获胜；炸弹和王炸每次令结算倍数翻倍。</p></section></div>
+  <div id="ddz-admin" class="niu-modal hidden"><section class="niu-modal-card admin-card"><button id="ddz-close-admin" class="modal-close">×</button><p>ROOM OWNER</p><h2>斗地主玩家管理</h2><button id="ddz-admin-auto" class="outline-button admin-auto">自动下一局：关</button><div id="ddz-admin-list"></div></section></div>
+  <div id="ddz-toast" class="niu-toast"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/doudizhu.js"></script>
+</body>
+</html>

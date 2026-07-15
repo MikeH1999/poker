@@ -8,7 +8,8 @@
     "start": "node server.mjs",
     "test:smoke": "node tests/smoke.mjs",
     "test:niuniu": "node tests/niuniu.mjs",
-    "test:zjh": "node tests/zjh.mjs"
+    "test:zjh": "node tests/zjh.mjs",
+    "test:doudizhu": "node tests/doudizhu.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",

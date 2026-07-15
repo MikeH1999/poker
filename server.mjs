@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Server } from "socket.io";
 import { evaluateZjhHand, compareZjhCards } from "./game/zjh-rules.mjs";
+import { analyzeDdzPlay, canBeatDdzPlay, ddzPlayName, sortDdzCards } from "./game/doudizhu-rules.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -20,12 +21,15 @@ app.get("/niuniu", (_req, res) => res.sendFile(join(__dirname, "public", "niuniu
 app.get("/niuniu/:id", (_req, res) => res.sendFile(join(__dirname, "public", "niuniu.html")));
 app.get("/zjh", (_req, res) => res.sendFile(join(__dirname, "public", "zjh.html")));
 app.get("/zjh/:id", (_req, res) => res.sendFile(join(__dirname, "public", "zjh.html")));
+app.get("/doudizhu", (_req, res) => res.sendFile(join(__dirname, "public", "doudizhu.html")));
+app.get("/doudizhu/:id", (_req, res) => res.sendFile(join(__dirname, "public", "doudizhu.html")));
 app.use(express.static(join(__dirname, "public")));
-app.get("/health", (_req, res) => res.json({ ok: true, rooms: rooms.size, holdemRooms: rooms.size, niuniuRooms: niuRooms.size, zjhRooms: zjhRooms.size }));
+app.get("/health", (_req, res) => res.json({ ok: true, rooms: rooms.size, holdemRooms: rooms.size, niuniuRooms: niuRooms.size, zjhRooms: zjhRooms.size, doudizhuRooms: ddzRooms.size }));
 
 const rooms = new Map();
 const niuRooms = new Map();
 const zjhRooms = new Map();
+const ddzRooms = new Map();
 const suits = ["s", "h", "d", "c"];
 const ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"];
 
@@ -1963,6 +1967,475 @@ io.on("connection", (socket) => {
       if (!online.length) setTimeout(() => { if (!room.players.some((candidate) => candidate.connected)) zjhRooms.delete(room.id); }, 30 * 60 * 1000);
       broadcastZjh(room);
     } catch { /* not in a zjh room */ }
+  });
+});
+
+function createDdzDeck() {
+  const deck = suits.flatMap((suit) => ranks.map((rank) => ({ id: `${rank}-${suit}`, rank, suit })));
+  deck.push({ id: "BJ", rank: "BJ", suit: "joker" }, { id: "RJ", rank: "RJ", suit: "joker" });
+  for (let index = deck.length - 1; index > 0; index -= 1) {
+    const swap = Math.floor(Math.random() * (index + 1));
+    [deck[index], deck[swap]] = [deck[swap], deck[index]];
+  }
+  return deck;
+}
+
+function createDdzRoom(ownerName, settings = {}) {
+  let id;
+  do id = roomId(); while (ddzRooms.has(id));
+  const room = {
+    id, createdAt: Date.now(), hostId: null, players: [], messages: [], paused: false,
+    phase: "waiting", handNumber: 0, bottomCards: [], landlordId: null,
+    bidPlayerId: null, bidStarterId: null, bidTurns: 0, highestBid: 0, highestBidderId: null,
+    actionPlayerId: null, previousPlay: null, passes: 0, multiplier: 1, result: null,
+    actionDeadline: null, actionTimer: null, nextHandAt: null, autoStartTimer: null,
+    settings: {
+      startingPoints: clamp(settings.startingPoints, 100, 100000, 1000),
+      baseScore: clamp(settings.baseScore, 1, 10000, 10),
+      decisionTimeSeconds: clamp(settings.decisionTimeSeconds, 5, 120, 30),
+      autoStartNextHand: Boolean(settings.autoStartNextHand),
+      maxPlayers: 3,
+    },
+  };
+  const player = addDdzPlayer(room, ownerName, room.settings.startingPoints, 0);
+  room.hostId = player.id;
+  ddzRooms.set(id, room);
+  return { room, player };
+}
+
+function addDdzPlayer(room, name, points, requestedSeat) {
+  const seat = Number(requestedSeat);
+  if (!Number.isInteger(seat) || seat < 0 || seat > 2) throw new Error("请选择有效座位");
+  if (room.players.some((player) => player.seated && player.seat === seat)) throw new Error("该座位已被占用，请重新选择");
+  const player = {
+    id: randomUUID(), token: randomBytes(18).toString("base64url"), socketId: null,
+    name: cleanName(name), seat, points: clamp(points, room.settings.baseScore, 100000, Math.max(room.settings.startingPoints, room.settings.baseScore)),
+    connected: true, seated: true, away: false, rejoinCount: 0,
+    cards: [], bid: null, delta: 0, status: "等待中",
+  };
+  room.players.push(player);
+  return player;
+}
+
+function activeDdzPlayers(room) {
+  return room.players.filter((player) => player.seated && player.connected && !player.away && player.points >= room.settings.baseScore).sort((a, b) => a.seat - b.seat);
+}
+
+function nextDdzPlayer(room, currentId) {
+  const players = room.players.filter((player) => player.cards.length > 0).sort((a, b) => a.seat - b.seat);
+  if (!players.length) return null;
+  const current = room.players.find((player) => player.id === currentId);
+  return players.find((player) => player.seat > (current?.seat ?? -1)) || players[0];
+}
+
+function ddzMessage(room, text) {
+  room.messages.push({ id: randomUUID(), type: "system", text, at: Date.now() });
+}
+
+function publicDdzState(room, viewerId) {
+  const viewer = room.players.find((player) => player.id === viewerId);
+  const revealAll = room.phase === "result";
+  return {
+    id: room.id, hostId: room.hostId, paused: room.paused, phase: room.phase,
+    handNumber: room.handNumber, landlordId: room.landlordId,
+    bidPlayerId: room.bidPlayerId, bidStarterId: room.bidStarterId, highestBid: room.highestBid,
+    actionPlayerId: room.actionPlayerId, previousPlay: room.previousPlay,
+    multiplier: room.multiplier, actionDeadline: room.actionDeadline,
+    nextHandAt: room.nextHandAt, serverTime: Date.now(), settings: room.settings, result: room.result,
+    bottomCardCount: room.bottomCards.length,
+    bottomCards: ["playing", "result"].includes(room.phase) ? room.bottomCards : [],
+    viewer: viewer ? { id: viewer.id, seated: viewer.seated, rejoinCount: viewer.rejoinCount, status: viewer.status } : null,
+    players: room.players.filter((player) => player.seated).map((player) => ({
+      id: player.id, name: player.name, seat: player.seat, points: player.points,
+      connected: player.connected, away: player.away, rejoinCount: player.rejoinCount,
+      bid: player.bid, delta: player.delta, status: player.status, cardCount: player.cards.length,
+      cards: player.id === viewerId || revealAll ? player.cards : [],
+    })),
+    messages: room.messages.slice(-80),
+  };
+}
+
+function broadcastDdz(room) {
+  for (const player of room.players) if (player.socketId) io.to(player.socketId).emit("ddz:state", publicDdzState(room, player.id));
+}
+
+function clearDdzActionTimer(room) {
+  if (room.actionTimer) clearTimeout(room.actionTimer);
+  room.actionTimer = null;
+  room.actionDeadline = null;
+}
+
+function armDdzActionTimer(room) {
+  clearDdzActionTimer(room);
+  if (room.paused || !["bidding", "playing"].includes(room.phase)) return;
+  const playerId = room.phase === "bidding" ? room.bidPlayerId : room.actionPlayerId;
+  if (!playerId) return;
+  room.actionDeadline = Date.now() + room.settings.decisionTimeSeconds * 1000;
+  room.actionTimer = setTimeout(() => {
+    try {
+      const currentId = room.phase === "bidding" ? room.bidPlayerId : room.actionPlayerId;
+      if (room.paused || currentId !== playerId) return;
+      const player = room.players.find((candidate) => candidate.id === playerId);
+      if (!player) return;
+      if (room.phase === "bidding") {
+        applyDdzBid(room, player, 0, true);
+      } else if (room.previousPlay && room.previousPlay.playerId !== player.id) {
+        applyDdzPass(room, player, true);
+      } else {
+        applyDdzPlay(room, player, [sortDdzCards(player.cards)[0].id], true);
+      }
+    } catch (error) {
+      clearDdzActionTimer(room);
+      room.phase = "waiting";
+      room.bidPlayerId = null;
+      room.actionPlayerId = null;
+      ddzMessage(room, `本局已暂停：${error.message}`);
+    }
+    broadcastDdz(room);
+  }, room.settings.decisionTimeSeconds * 1000);
+}
+
+function setDdzBidPlayer(room, player) {
+  clearDdzActionTimer(room);
+  room.bidPlayerId = player?.id || null;
+  if (player) { player.status = "轮到你叫地主"; armDdzActionTimer(room); }
+}
+
+function setDdzActionPlayer(room, player) {
+  clearDdzActionTimer(room);
+  room.actionPlayerId = player?.id || null;
+  if (player) { player.status = room.previousPlay ? "轮到你出牌" : "请领出牌"; armDdzActionTimer(room); }
+}
+
+function clearDdzAutoStart(room) {
+  if (room.autoStartTimer) clearTimeout(room.autoStartTimer);
+  room.autoStartTimer = null;
+  room.nextHandAt = null;
+}
+
+function scheduleDdzAutoStart(room) {
+  clearDdzAutoStart(room);
+  if (!room.settings.autoStartNextHand || room.paused || room.phase !== "result") return;
+  room.nextHandAt = Date.now() + 5000;
+  room.autoStartTimer = setTimeout(() => {
+    room.autoStartTimer = null;
+    room.nextHandAt = null;
+    if (!room.settings.autoStartNextHand || room.paused || room.phase !== "result") return;
+    try { startDdzHand(room); } catch (error) { ddzMessage(room, `自动开局等待中：${error.message}`); }
+    broadcastDdz(room);
+  }, 5000);
+}
+
+function unseatDdzPlayer(room, player) {
+  if (!player.seated) return;
+  player.seated = false;
+  player.seat = null;
+  player.away = false;
+  player.status = `积分不足底分 ${room.settings.baseScore}，等待重新坐下`;
+  ddzMessage(room, `${player.name} 积分低于底分 ${room.settings.baseScore}，座位已释放`);
+}
+
+function startDdzHand(room) {
+  clearDdzActionTimer(room);
+  clearDdzAutoStart(room);
+  for (const player of room.players) if (player.seated && player.points < room.settings.baseScore) unseatDdzPlayer(room, player);
+  const players = activeDdzPlayers(room);
+  if (players.length !== 3) throw new Error("斗地主需要正好 3 位有足够积分的在线玩家");
+  const deck = createDdzDeck();
+  room.phase = "bidding";
+  room.handNumber += 1;
+  room.bottomCards = deck.splice(-3);
+  room.landlordId = null;
+  room.highestBid = 0;
+  room.highestBidderId = null;
+  room.bidTurns = 0;
+  room.previousPlay = null;
+  room.passes = 0;
+  room.multiplier = 1;
+  room.result = null;
+  const starter = players[Math.floor(Math.random() * players.length)];
+  room.bidStarterId = starter.id;
+  const starterIndex = players.findIndex((player) => player.id === starter.id);
+  const order = [...players.slice(starterIndex), ...players.slice(0, starterIndex)];
+  for (const player of room.players) {
+    player.cards = [];
+    player.bid = null;
+    player.delta = 0;
+    player.status = players.includes(player) ? "等待叫地主" : player.away ? "暂时离座" : "下一局加入";
+  }
+  for (let index = 0; index < 51; index += 1) order[index % 3].cards.push(deck[index]);
+  for (const player of players) player.cards = sortDdzCards(player.cards);
+  ddzMessage(room, `第 ${room.handNumber} 局发牌完成，开始叫地主`);
+  setDdzBidPlayer(room, starter);
+}
+
+function applyDdzBid(room, player, score, timedOut = false) {
+  if (room.phase !== "bidding" || room.bidPlayerId !== player.id || player.bid !== null) throw new Error("当前不能叫地主");
+  const value = Number(score);
+  if (![0, 1, 2, 3].includes(value)) throw new Error("无效叫分");
+  if (value > 0 && value <= room.highestBid) throw new Error("叫分必须高于当前最高分");
+  player.bid = value;
+  player.status = value ? `叫 ${value} 分` : timedOut ? "超时 · 不叫" : "不叫";
+  room.bidTurns += 1;
+  if (value > room.highestBid) { room.highestBid = value; room.highestBidderId = player.id; }
+  ddzMessage(room, `${player.name} ${value ? `叫 ${value} 分` : timedOut ? "超时不叫" : "不叫"}`);
+  if (value === 3 || room.bidTurns >= 3) {
+    if (!room.highestBidderId) {
+      ddzMessage(room, "三位玩家均不叫，重新发牌");
+      startDdzHand(room);
+      return;
+    }
+    finalizeDdzLandlord(room);
+    return;
+  }
+  const next = nextDdzSeatPlayer(room, player.id);
+  setDdzBidPlayer(room, next);
+}
+
+function nextDdzSeatPlayer(room, currentId) {
+  const players = room.players.filter((player) => player.cards.length === 17).sort((a, b) => a.seat - b.seat);
+  const index = players.findIndex((player) => player.id === currentId);
+  return players[(index + 1) % players.length];
+}
+
+function finalizeDdzLandlord(room) {
+  clearDdzActionTimer(room);
+  const landlord = room.players.find((player) => player.id === room.highestBidderId);
+  room.landlordId = landlord.id;
+  landlord.cards = sortDdzCards([...landlord.cards, ...room.bottomCards]);
+  room.phase = "playing";
+  room.bidPlayerId = null;
+  for (const player of room.players.filter((candidate) => candidate.cards.length)) player.status = player.id === landlord.id ? `地主 · ${landlord.cards.length} 张` : "农民 · 等待出牌";
+  ddzMessage(room, `${landlord.name} 以 ${room.highestBid} 分成为地主，获得三张底牌`);
+  setDdzActionPlayer(room, landlord);
+}
+
+function applyDdzPlay(room, player, cardIds, timedOut = false) {
+  if (room.phase !== "playing" || room.actionPlayerId !== player.id) throw new Error("还没轮到你出牌");
+  const ids = [...new Set(Array.isArray(cardIds) ? cardIds.map(String) : [])];
+  if (!ids.length) throw new Error("请先选择要出的牌");
+  const selected = ids.map((id) => player.cards.find((card) => card.id === id));
+  if (selected.some((card) => !card) || selected.length !== ids.length) throw new Error("所选牌不在你的手牌中");
+  const previous = room.previousPlay?.playerId === player.id ? null : room.previousPlay?.play || null;
+  const play = analyzeDdzPlay(selected);
+  if (!play) throw new Error("所选牌不符合斗地主牌型");
+  if (!canBeatDdzPlay(selected, previous)) throw new Error("所选牌无法压过上一手");
+  clearDdzActionTimer(room);
+  const selectedSet = new Set(ids);
+  player.cards = player.cards.filter((card) => !selectedSet.has(card.id));
+  room.previousPlay = { playerId: player.id, cards: sortDdzCards(selected), play };
+  room.passes = 0;
+  if (["bomb", "rocket"].includes(play.type)) room.multiplier *= 2;
+  player.status = `${timedOut ? "超时托管 · " : ""}${ddzPlayName(play)} · 剩 ${player.cards.length} 张`;
+  ddzMessage(room, `${player.name} 出${ddzPlayName(play)}${["bomb", "rocket"].includes(play.type) ? `，倍数升至 ×${room.multiplier}` : ""}`);
+  if (!player.cards.length) { finishDdzHand(room, player); return; }
+  setDdzActionPlayer(room, nextDdzPlayer(room, player.id));
+}
+
+function applyDdzPass(room, player, timedOut = false) {
+  if (room.phase !== "playing" || room.actionPlayerId !== player.id) throw new Error("还没轮到你出牌");
+  if (!room.previousPlay || room.previousPlay.playerId === player.id) throw new Error("你需要领出牌，不能不出");
+  clearDdzActionTimer(room);
+  const leaderId = room.previousPlay.playerId;
+  room.passes += 1;
+  player.status = timedOut ? "超时 · 不出" : "不出";
+  ddzMessage(room, `${player.name} ${timedOut ? "超时不出" : "不出"}`);
+  if (room.passes >= 2) {
+    room.previousPlay = null;
+    room.passes = 0;
+    const leader = room.players.find((candidate) => candidate.id === leaderId);
+    setDdzActionPlayer(room, leader);
+  } else setDdzActionPlayer(room, nextDdzPlayer(room, player.id));
+}
+
+function finishDdzHand(room, winner) {
+  clearDdzActionTimer(room);
+  room.phase = "result";
+  room.actionPlayerId = null;
+  const landlordWon = winner.id === room.landlordId;
+  const score = room.settings.baseScore * Math.max(1, room.highestBid) * room.multiplier;
+  const landlord = room.players.find((player) => player.id === room.landlordId);
+  const farmers = room.players.filter((player) => player.cards.length >= 0 && player.id !== room.landlordId && player.seated);
+  for (const player of room.players) player.delta = 0;
+  if (landlordWon) {
+    for (const farmer of farmers) {
+      const amount = Math.min(score, farmer.points);
+      farmer.points -= amount; farmer.delta -= amount;
+      landlord.points += amount; landlord.delta += amount;
+    }
+  } else {
+    const payouts = proportionalAmounts(farmers.map((player) => ({ player, amount: score })), Math.min(landlord.points, score * farmers.length));
+    for (const payout of payouts) {
+      landlord.points -= payout.amount; landlord.delta -= payout.amount;
+      payout.player.points += payout.amount; payout.player.delta += payout.amount;
+    }
+  }
+  room.result = { winnerId: winner.id, landlordWon, score, text: `${landlordWon ? "地主" : "农民"}获胜 · 每家 ${score} 分` };
+  for (const player of room.players) {
+    player.status = player.delta > 0 ? `获胜 · +${player.delta}` : player.delta < 0 ? `失败 · ${player.delta}` : "本局结束";
+    if (player.points < room.settings.baseScore) player.status += ` · 积分不足，下局离桌`;
+  }
+  ddzMessage(room, room.result.text);
+  scheduleDdzAutoStart(room);
+}
+
+function reseatDdzPlayer(room, player, { name, points, seat }) {
+  if (room.players.filter((candidate) => candidate.seated).length >= 3) throw new Error("房间已满");
+  const numericSeat = Number(seat);
+  if (!Number.isInteger(numericSeat) || numericSeat < 0 || numericSeat > 2) throw new Error("请选择有效座位");
+  if (room.players.some((candidate) => candidate.seated && candidate.seat === numericSeat)) throw new Error("该座位已被占用，请重新选择");
+  Object.assign(player, {
+    seated: true, seat: numericSeat, name: cleanName(name || player.name),
+    points: clamp(points, room.settings.baseScore, 100000, Math.max(room.settings.startingPoints, room.settings.baseScore)),
+    away: false, cards: [], bid: null, delta: 0, status: ["bidding", "playing"].includes(room.phase) ? "下一局加入" : "等待中",
+  });
+  player.rejoinCount += 1;
+  ddzMessage(room, `${player.name} 第 ${player.rejoinCount} 次重新坐下`);
+}
+
+function identifyDdz(socket) {
+  const room = ddzRooms.get(socket.data?.ddzRoomId);
+  const player = room?.players.find((candidate) => candidate.id === socket.data?.ddzPlayerId);
+  if (!room || !player) throw new Error("请先加入斗地主房间");
+  return { room, player };
+}
+
+io.on("connection", (socket) => {
+  socket.on("ddz:create", ({ name, settings }, reply = () => {}) => {
+    try {
+      const { room, player } = createDdzRoom(name, settings);
+      player.socketId = socket.id;
+      socket.data.ddzRoomId = room.id; socket.data.ddzPlayerId = player.id;
+      socket.join(`ddz:${room.id}`);
+      ddzMessage(room, `${player.name} 创建了斗地主房间`);
+      broadcastDdz(room);
+      reply({ ok: true, roomId: room.id, playerId: player.id, token: player.token });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("ddz:preview", ({ roomId: rawId }, reply = () => {}) => {
+    try {
+      const room = ddzRooms.get(String(rawId || "").toUpperCase());
+      if (!room) throw new Error("房间不存在或已结束");
+      const seated = room.players.filter((player) => player.seated);
+      reply({ ok: true, roomId: room.id, defaultPoints: room.settings.startingPoints, baseScore: room.settings.baseScore,
+        maxPlayers: 3, remainingSlots: Math.max(0, 3 - seated.length),
+        occupiedSeats: seated.map((player) => ({ seat: player.seat, name: player.name })), inProgress: ["bidding", "playing"].includes(room.phase) });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("ddz:join", ({ roomId: rawId, name, points, seat, token }, reply = () => {}) => {
+    try {
+      const room = ddzRooms.get(String(rawId || "").toUpperCase());
+      if (!room) throw new Error("房间不存在或已结束");
+      let player = room.players.find((candidate) => candidate.token === token);
+      if (player && !player.seated) reseatDdzPlayer(room, player, { name, points, seat });
+      else if (!player) {
+        if (room.players.filter((candidate) => candidate.seated).length >= 3) throw new Error("房间已满");
+        player = addDdzPlayer(room, name, points, seat);
+        if (["bidding", "playing"].includes(room.phase)) player.status = "下一局加入";
+        ddzMessage(room, `${player.name} 已入座${player.status === "下一局加入" ? "，将从下一局加入" : ""}`);
+      }
+      player.socketId = socket.id; player.connected = true;
+      socket.data.ddzRoomId = room.id; socket.data.ddzPlayerId = player.id;
+      socket.join(`ddz:${room.id}`);
+      broadcastDdz(room);
+      reply({ ok: true, roomId: room.id, playerId: player.id, token: player.token, rejoinCount: player.rejoinCount });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("ddz:start", (_, reply = () => {}) => {
+    try {
+      const { room, player } = identifyDdz(socket);
+      if (room.hostId !== player.id) throw new Error("只有房主可以开始");
+      if (room.paused) throw new Error("牌桌已暂停");
+      if (!["waiting", "result"].includes(room.phase)) throw new Error("本局尚未结束");
+      startDdzHand(room); broadcastDdz(room); reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("ddz:bid", ({ score }, reply = () => {}) => {
+    try { const { room, player } = identifyDdz(socket); if (room.paused) throw new Error("牌桌已暂停"); applyDdzBid(room, player, score); broadcastDdz(room); reply({ ok: true }); }
+    catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("ddz:play", ({ cardIds }, reply = () => {}) => {
+    try { const { room, player } = identifyDdz(socket); if (room.paused) throw new Error("牌桌已暂停"); applyDdzPlay(room, player, cardIds); broadcastDdz(room); reply({ ok: true }); }
+    catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("ddz:pass", (_, reply = () => {}) => {
+    try { const { room, player } = identifyDdz(socket); if (room.paused) throw new Error("牌桌已暂停"); applyDdzPass(room, player); broadcastDdz(room); reply({ ok: true }); }
+    catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("ddz:away", ({ away }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyDdz(socket);
+      if (["bidding", "playing"].includes(room.phase)) throw new Error("请在本局结束后离座");
+      player.away = Boolean(away); player.status = player.away ? "暂时离座" : "等待中";
+      ddzMessage(room, `${player.name} ${player.away ? "暂时离座" : "回到牌桌"}`); broadcastDdz(room); reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("ddz:pause", ({ paused }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyDdz(socket); if (room.hostId !== player.id) throw new Error("只有房主可以暂停");
+      room.paused = Boolean(paused);
+      if (room.paused) { clearDdzActionTimer(room); clearDdzAutoStart(room); }
+      else if (["bidding", "playing"].includes(room.phase)) armDdzActionTimer(room); else if (room.phase === "result") scheduleDdzAutoStart(room);
+      ddzMessage(room, `${player.name} ${room.paused ? "暂停" : "恢复"}了游戏`); broadcastDdz(room); reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("ddz:auto-start", ({ enabled }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyDdz(socket); if (room.hostId !== player.id) throw new Error("只有房主可以设置自动开局");
+      room.settings.autoStartNextHand = Boolean(enabled);
+      if (room.settings.autoStartNextHand) scheduleDdzAutoStart(room); else clearDdzAutoStart(room);
+      ddzMessage(room, `${player.name} ${room.settings.autoStartNextHand ? "开启" : "关闭"}了自动下一局`); broadcastDdz(room); reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("ddz:host-points", ({ playerId, points }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyDdz(socket); if (room.hostId !== player.id) throw new Error("只有房主可以修改积分");
+      if (!["waiting", "result"].includes(room.phase)) throw new Error("请在两局之间修改积分");
+      const target = room.players.find((candidate) => candidate.id === playerId && candidate.seated); if (!target) throw new Error("玩家不存在");
+      target.points = clamp(points, 0, 10000000, target.points); ddzMessage(room, `${player.name} 将 ${target.name} 的积分调整为 ${target.points}`);
+      if (target.points < room.settings.baseScore) unseatDdzPlayer(room, target); broadcastDdz(room); reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("ddz:kick", ({ playerId }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyDdz(socket); if (room.hostId !== player.id) throw new Error("只有房主可以剔除玩家");
+      if (!["waiting", "result"].includes(room.phase)) throw new Error("请在两局之间剔除玩家"); if (playerId === player.id) throw new Error("房主不能剔除自己");
+      const index = room.players.findIndex((candidate) => candidate.id === playerId); if (index < 0) throw new Error("玩家不存在");
+      const [target] = room.players.splice(index, 1); if (target.socketId) io.to(target.socketId).emit("ddz:kicked", { message: "你已被房主移出斗地主房间" });
+      ddzMessage(room, `${target.name} 已被移出房间`); broadcastDdz(room); reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("ddz:chat", ({ text }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyDdz(socket); const message = String(text || "").trim().slice(0, 160); if (!message) throw new Error("消息不能为空");
+      room.messages.push({ id: randomUUID(), type: "chat", name: player.name, text: message, at: Date.now() }); broadcastDdz(room);
+      io.to(`ddz:${room.id}`).emit("ddz:chat-bubble", { playerId: player.id, text: message, expiresAt: Date.now() + 6000 }); reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("disconnect", () => {
+    try {
+      const { room, player } = identifyDdz(socket); player.connected = false; player.socketId = null;
+      const online = room.players.filter((candidate) => candidate.connected); if (room.hostId === player.id && online.length) room.hostId = online[0].id;
+      if (!online.length) {
+        clearDdzActionTimer(room);
+        clearDdzAutoStart(room);
+        setTimeout(() => { if (!room.players.some((candidate) => candidate.connected)) ddzRooms.delete(room.id); }, 30 * 60 * 1000);
+      }
+      broadcastDdz(room);
+    } catch { /* not in a doudizhu room */ }
   });
 });
 
