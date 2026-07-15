@@ -12,11 +12,16 @@ const io = new Server(httpServer);
 const PORT = Number(process.env.PORT || 3000);
 
 app.use(express.json());
-app.use(express.static(join(__dirname, "public")));
+app.get("/", (_req, res) => res.sendFile(join(__dirname, "public", "portal.html")));
+app.get("/holdem", (_req, res) => res.sendFile(join(__dirname, "public", "index.html")));
 app.get("/room/:id", (_req, res) => res.sendFile(join(__dirname, "public", "index.html")));
-app.get("/health", (_req, res) => res.json({ ok: true, rooms: rooms.size }));
+app.get("/niuniu", (_req, res) => res.sendFile(join(__dirname, "public", "niuniu.html")));
+app.get("/niuniu/:id", (_req, res) => res.sendFile(join(__dirname, "public", "niuniu.html")));
+app.use(express.static(join(__dirname, "public")));
+app.get("/health", (_req, res) => res.json({ ok: true, rooms: rooms.size, holdemRooms: rooms.size, niuniuRooms: niuRooms.size }));
 
 const rooms = new Map();
+const niuRooms = new Map();
 const suits = ["s", "h", "d", "c"];
 const ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"];
 
@@ -873,6 +878,419 @@ io.on("connection", (socket) => {
       else if (room.hostId === player.id) room.hostId = online[0].id;
       broadcast(room);
     } catch { /* disconnected before joining */ }
+  });
+});
+
+// 看四张抢庄牛牛 -------------------------------------------------------------
+
+function createNiuRoom(ownerName, settings = {}) {
+  let id;
+  do id = roomId(); while (niuRooms.has(id));
+  const room = {
+    id,
+    hostId: null,
+    players: [],
+    messages: [],
+    phase: "waiting",
+    paused: false,
+    roundNumber: 0,
+    bankerId: null,
+    bankerBid: 1,
+    deck: [],
+    result: null,
+    settings: {
+      startingPoints: clamp(settings.startingPoints, 100, 100000, 1000),
+      baseScore: clamp(settings.baseScore, 1, 10000, 10),
+      maxPlayers: clamp(settings.maxPlayers, 2, 6, 6),
+    },
+  };
+  const player = addNiuPlayer(room, ownerName, room.settings.startingPoints, 0);
+  room.hostId = player.id;
+  niuRooms.set(id, room);
+  return { room, player };
+}
+
+function addNiuPlayer(room, name, points, requestedSeat) {
+  const taken = new Set(room.players.filter((player) => player.seated).map((player) => player.seat));
+  const seat = Number(requestedSeat);
+  if (!Number.isInteger(seat) || seat < 0 || seat > 5) throw new Error("请选择有效座位");
+  if (taken.has(seat)) throw new Error("该座位已被占用，请重新选择");
+  const player = {
+    id: randomUUID(), token: randomBytes(18).toString("base64url"), socketId: null,
+    name: cleanName(name), seat, points: clamp(points, 100, 100000, room.settings.startingPoints),
+    connected: true, seated: true, away: false, rejoinCount: 0,
+    cards: [], bid: null, bet: null, hand: null, delta: 0, broughtPoints: 0,
+    status: "等待中",
+  };
+  room.players.push(player);
+  return player;
+}
+
+function activeNiuPlayers(room) {
+  return room.players.filter((player) => player.seated && player.connected && !player.away && player.points > 0).sort((a, b) => a.seat - b.seat);
+}
+
+function niuMessage(room, text) {
+  room.messages.push({ id: randomUUID(), type: "system", text, at: Date.now() });
+}
+
+function publicNiuState(room, viewerId) {
+  const viewer = room.players.find((player) => player.id === viewerId);
+  const revealAll = room.phase === "result";
+  return {
+    id: room.id, hostId: room.hostId, phase: room.phase, paused: room.paused,
+    roundNumber: room.roundNumber, bankerId: room.bankerId, bankerBid: room.bankerBid,
+    settings: room.settings, result: room.result,
+    viewer: viewer ? { id: viewer.id, seated: viewer.seated, rejoinCount: viewer.rejoinCount, status: viewer.status } : null,
+    players: room.players.filter((player) => player.seated).map((player) => ({
+      id: player.id, name: player.name, seat: player.seat, points: player.points,
+      connected: player.connected, away: player.away, rejoinCount: player.rejoinCount,
+      status: player.status, bid: player.bid, bet: player.bet, delta: player.delta,
+      cardCount: player.cards.length,
+      cards: player.id === viewerId || revealAll ? player.cards : [],
+      hand: player.id === viewerId || revealAll ? player.hand : null,
+    })),
+    messages: room.messages.slice(-60),
+  };
+}
+
+function broadcastNiu(room) {
+  for (const player of room.players) if (player.socketId) io.to(player.socketId).emit("niu:state", publicNiuState(room, player.id));
+}
+
+function startNiuRound(room) {
+  const players = activeNiuPlayers(room);
+  if (players.length < 2) throw new Error("至少需要 2 位有积分的在线玩家");
+  room.roundNumber += 1;
+  room.phase = "bid";
+  room.bankerId = null;
+  room.bankerBid = 1;
+  room.result = null;
+  room.deck = createDeck();
+  for (const player of room.players) {
+    player.cards = players.includes(player) ? [room.deck.pop(), room.deck.pop(), room.deck.pop(), room.deck.pop()] : [];
+    player.bid = null;
+    player.bet = null;
+    player.hand = null;
+    player.delta = 0;
+    player.broughtPoints = player.points;
+    player.status = players.includes(player) ? "请选择抢庄倍数" : player.seated ? "下一局加入" : "等待重新坐下";
+  }
+  niuMessage(room, `第 ${room.roundNumber} 局开始，每人先看四张牌`);
+}
+
+function progressNiuBids(room) {
+  const players = room.players.filter((player) => player.cards.length === 4);
+  if (!players.length || players.some((player) => player.bid === null)) return;
+  const highest = Math.max(...players.map((player) => player.bid));
+  const candidates = players.filter((player) => player.bid === highest);
+  const banker = candidates[Math.floor(Math.random() * candidates.length)];
+  room.bankerId = banker.id;
+  room.bankerBid = Math.max(1, highest);
+  room.phase = "bet";
+  for (const player of players) player.status = player.id === banker.id ? `庄家 · ${room.bankerBid} 倍` : "请选择下注倍数";
+  niuMessage(room, `${banker.name} 成为庄家，抢庄 ${room.bankerBid} 倍`);
+}
+
+function progressNiuBets(room) {
+  const players = room.players.filter((player) => player.cards.length === 4);
+  const idlePlayers = players.filter((player) => player.id !== room.bankerId);
+  if (idlePlayers.some((player) => player.bet === null)) return;
+  for (const player of players) {
+    player.cards.push(room.deck.pop());
+    player.hand = evaluateNiuHand(player.cards);
+    player.status = `${player.hand.name} · ${player.hand.multiplier}倍`;
+  }
+  room.phase = "reveal";
+  niuMessage(room, "下注完成，发出第 5 张牌并自动拼牌");
+  broadcastNiu(room);
+  setTimeout(() => settleNiuWhenReady(room), 1600);
+}
+
+function settleNiuWhenReady(room) {
+  if (room.phase !== "reveal") return;
+  if (room.paused) return setTimeout(() => settleNiuWhenReady(room), 400);
+  settleNiuRound(room);
+  broadcastNiu(room);
+}
+
+function evaluateNiuHand(cards) {
+  const point = (card) => ["T", "J", "Q", "K"].includes(card.rank) ? 10 : card.rank === "A" ? 1 : Number(card.rank);
+  const strength = (card) => ({ A: 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, T: 10, J: 11, Q: 12, K: 13 })[card.rank];
+  const suitStrength = (card) => ({ d: 1, c: 2, h: 3, s: 4 })[card.suit];
+  const highest = [...cards].sort((a, b) => strength(b) - strength(a) || suitStrength(b) - suitStrength(a))[0];
+  const common = { highRank: strength(highest), highSuit: suitStrength(highest) };
+  const values = cards.map(point);
+  if (values.every((value) => value < 5) && values.reduce((sum, value) => sum + value, 0) <= 10) return { category: 13, name: "五小牛", multiplier: 6, ...common };
+  const counts = new Map(cards.map((card) => [card.rank, cards.filter((other) => other.rank === card.rank).length]));
+  const bomb = [...counts].find(([, count]) => count === 4);
+  if (bomb) return { category: 12, name: "炸弹牛", multiplier: 5, bombRank: strength({ rank: bomb[0] }), ...common };
+  if (cards.every((card) => ["J", "Q", "K"].includes(card.rank))) return { category: 11, name: "五花牛", multiplier: 4, ...common };
+  let niu = -1;
+  for (let a = 0; a < 3; a += 1) for (let b = a + 1; b < 4; b += 1) for (let c = b + 1; c < 5; c += 1) {
+    if ((values[a] + values[b] + values[c]) % 10 === 0) {
+      const rest = values.reduce((sum, value, index) => sum + ([a, b, c].includes(index) ? 0 : value), 0) % 10;
+      niu = Math.max(niu, rest === 0 ? 10 : rest);
+    }
+  }
+  if (niu < 0) return { category: 0, name: "无牛", multiplier: 1, ...common };
+  return { category: niu, name: niu === 10 ? "牛牛" : `牛${["", "一", "二", "三", "四", "五", "六", "七", "八", "九"][niu]}`, multiplier: niu >= 7 && niu <= 9 ? 2 : niu === 10 ? 3 : 1, ...common };
+}
+
+function compareNiuHands(a, b) {
+  if (a.category !== b.category) return a.category - b.category;
+  if (a.category === 12 && a.bombRank !== b.bombRank) return a.bombRank - b.bombRank;
+  if (a.category === 13) return 0;
+  if (a.highRank !== b.highRank) return a.highRank - b.highRank;
+  return a.highSuit - b.highSuit;
+}
+
+function proportionalAmounts(entries, target) {
+  const total = entries.reduce((sum, entry) => sum + entry.amount, 0);
+  if (total <= target) return entries.map((entry) => ({ ...entry }));
+  const scaled = entries.map((entry) => ({ ...entry, exact: entry.amount * target / total }));
+  let used = scaled.reduce((sum, entry) => sum + Math.floor(entry.exact), 0);
+  scaled.sort((a, b) => (b.exact % 1) - (a.exact % 1));
+  return scaled.map((entry) => ({ ...entry, amount: Math.floor(entry.exact) + (used++ < target ? 1 : 0) }));
+}
+
+function settleNiuRound(room) {
+  const banker = room.players.find((player) => player.id === room.bankerId);
+  if (!banker) return;
+  const winners = [];
+  const losers = [];
+  for (const idle of room.players.filter((player) => player.cards.length === 5 && player.id !== banker.id)) {
+    const idleWins = compareNiuHands(idle.hand, banker.hand) > 0;
+    const winningHand = idleWins ? idle.hand : banker.hand;
+    const theoretical = room.settings.baseScore * winningHand.multiplier * room.bankerBid * idle.bet;
+    const entry = { player: idle, amount: Math.min(theoretical, idle.broughtPoints), theoretical };
+    (idleWins ? winners : losers).push(entry);
+  }
+  let pays = winners;
+  let receives = losers;
+  const payTotal = pays.reduce((sum, entry) => sum + entry.amount, 0);
+  const receiveTotal = receives.reduce((sum, entry) => sum + entry.amount, 0);
+  if (payTotal - receiveTotal > banker.broughtPoints) pays = proportionalAmounts(pays, banker.broughtPoints + receiveTotal);
+  if (receiveTotal - payTotal > banker.broughtPoints) receives = proportionalAmounts(receives, banker.broughtPoints + payTotal);
+  for (const player of room.players) player.delta = 0;
+  for (const entry of pays) { entry.player.delta += entry.amount; banker.delta -= entry.amount; }
+  for (const entry of receives) { entry.player.delta -= entry.amount; banker.delta += entry.amount; }
+  for (const player of room.players) player.points = Math.max(0, player.points + player.delta);
+  room.phase = "result";
+  room.result = {
+    bankerId: banker.id,
+    text: `${banker.name} 坐庄 · ${banker.hand.name}，本局已结算`,
+    settlements: room.players.filter((player) => player.cards.length === 5).map((player) => ({ playerId: player.id, delta: player.delta })),
+  };
+  niuMessage(room, room.result.text);
+  for (const player of room.players) {
+    player.status = player.delta > 0 ? `赢得 ${player.delta}` : player.delta < 0 ? `输掉 ${Math.abs(player.delta)}` : "本局和局";
+    if (player.seated && player.points <= 0) unseatNiuPlayer(room, player);
+  }
+}
+
+function unseatNiuPlayer(room, player) {
+  if (!player.seated) return;
+  player.seated = false;
+  player.seat = null;
+  player.away = false;
+  player.status = "积分耗尽，等待重新坐下";
+  niuMessage(room, `${player.name} 积分耗尽，座位已释放`);
+}
+
+function reseatNiuPlayer(room, player, { name, points, seat }) {
+  if (room.players.filter((candidate) => candidate.seated).length >= room.settings.maxPlayers) throw new Error("房间已满");
+  const numericSeat = Number(seat);
+  if (!Number.isInteger(numericSeat) || numericSeat < 0 || numericSeat > 5) throw new Error("请选择有效座位");
+  if (room.players.some((candidate) => candidate.seated && candidate.seat === numericSeat)) throw new Error("该座位已被占用，请重新选择");
+  Object.assign(player, {
+    seated: true, seat: numericSeat, name: cleanName(name || player.name),
+    points: clamp(points, 100, 100000, room.settings.startingPoints), away: false,
+    cards: [], bid: null, bet: null, hand: null, delta: 0,
+    status: ["bid", "bet", "reveal"].includes(room.phase) ? "下一局加入" : "等待中",
+  });
+  player.rejoinCount += 1;
+  niuMessage(room, `${player.name} 第 ${player.rejoinCount} 次重新坐下`);
+}
+
+function identifyNiu(socket) {
+  const room = niuRooms.get(socket.data?.niuRoomId);
+  const player = room?.players.find((candidate) => candidate.id === socket.data?.niuPlayerId);
+  if (!room || !player) throw new Error("请先加入牛牛房间");
+  return { room, player };
+}
+
+io.on("connection", (socket) => {
+  socket.on("niu:create", ({ name, settings }, reply = () => {}) => {
+    try {
+      const { room, player } = createNiuRoom(name, settings);
+      player.socketId = socket.id;
+      socket.join(`niu:${room.id}`);
+      socket.data.niuRoomId = room.id;
+      socket.data.niuPlayerId = player.id;
+      reply({ ok: true, roomId: room.id, token: player.token, playerId: player.id });
+      broadcastNiu(room);
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("niu:preview", ({ roomId: rawId }, reply = () => {}) => {
+    try {
+      const room = niuRooms.get(String(rawId || "").toUpperCase());
+      if (!room) throw new Error("房间不存在或已关闭");
+      const seatedCount = room.players.filter((player) => player.seated).length;
+      reply({ ok: true, roomId: room.id, defaultPoints: room.settings.startingPoints, maxPlayers: room.settings.maxPlayers,
+        remainingSlots: Math.max(0, room.settings.maxPlayers - seatedCount),
+        occupiedSeats: room.players.filter((player) => player.seated).map((player) => ({ seat: player.seat, name: player.name })),
+        inProgress: ["bid", "bet", "reveal"].includes(room.phase) });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("niu:join", ({ roomId: rawId, name, points, seat, token }, reply = () => {}) => {
+    try {
+      const room = niuRooms.get(String(rawId || "").toUpperCase());
+      if (!room) throw new Error("房间不存在或已关闭");
+      let player = room.players.find((candidate) => candidate.token === token);
+      if (player && !player.seated) {
+        if (seat === undefined || seat === null || seat === "") return reply({ ok: false, needsSeat: true, error: "请重新选择座位" });
+        reseatNiuPlayer(room, player, { name, points, seat });
+      } else if (!player) {
+        if (room.players.filter((candidate) => candidate.seated).length >= room.settings.maxPlayers) throw new Error("房间已满");
+        player = addNiuPlayer(room, name, points, seat);
+        if (["bid", "bet", "reveal"].includes(room.phase)) player.status = "下一局加入";
+        niuMessage(room, `${player.name} 已入座${player.status === "下一局加入" ? "，将从下一局加入" : ""}`);
+      }
+      player.socketId = socket.id;
+      player.connected = true;
+      socket.join(`niu:${room.id}`);
+      socket.data.niuRoomId = room.id;
+      socket.data.niuPlayerId = player.id;
+      reply({ ok: true, roomId: room.id, token: player.token, playerId: player.id, rejoinCount: player.rejoinCount });
+      broadcastNiu(room);
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("niu:start", (_, reply = () => {}) => {
+    try {
+      const { room, player } = identifyNiu(socket);
+      if (room.hostId !== player.id) throw new Error("只有房主可以开始");
+      if (room.paused) throw new Error("牌桌已暂停");
+      if (!["waiting", "result"].includes(room.phase)) throw new Error("本局尚未结束");
+      startNiuRound(room);
+      broadcastNiu(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("niu:bid", ({ multiplier }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyNiu(socket);
+      if (room.paused || room.phase !== "bid" || player.cards.length !== 4 || player.bid !== null) throw new Error("当前不能抢庄");
+      const value = Number(multiplier);
+      if (![0, 1, 2, 3, 4].includes(value)) throw new Error("无效抢庄倍数");
+      player.bid = value;
+      player.status = value ? `已抢庄 ${value} 倍` : "不抢庄";
+      niuMessage(room, `${player.name} ${value ? `抢庄 ${value} 倍` : "不抢"}`);
+      progressNiuBids(room);
+      broadcastNiu(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("niu:bet", ({ multiplier }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyNiu(socket);
+      if (room.paused || room.phase !== "bet" || player.id === room.bankerId || player.cards.length !== 4 || player.bet !== null) throw new Error("当前不能下注");
+      const value = Number(multiplier);
+      if (![1, 2, 3, 5, 10, 15].includes(value)) throw new Error("无效下注倍数");
+      if (player.points < room.settings.baseScore * room.bankerBid * value) throw new Error("积分不足，请选择更低倍数");
+      player.bet = value;
+      player.status = `已下注 ${value} 倍`;
+      niuMessage(room, `${player.name} 下注 ${value} 倍`);
+      progressNiuBets(room);
+      broadcastNiu(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("niu:away", ({ away }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyNiu(socket);
+      player.away = Boolean(away);
+      if (player.away && room.phase === "bid" && player.cards.length === 4 && player.bid === null) { player.bid = 0; progressNiuBids(room); }
+      if (player.away && room.phase === "bet" && player.id !== room.bankerId && player.cards.length === 4 && player.bet === null) { player.bet = 1; progressNiuBets(room); }
+      player.status = player.away ? "暂时离座" : ["bid", "bet", "reveal"].includes(room.phase) ? "下一局加入" : "等待中";
+      niuMessage(room, `${player.name} ${player.away ? "暂时离座" : "回到牌桌"}`);
+      broadcastNiu(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("niu:pause", ({ paused }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyNiu(socket);
+      if (room.hostId !== player.id) throw new Error("只有房主可以暂停");
+      room.paused = Boolean(paused);
+      niuMessage(room, `${player.name} ${room.paused ? "暂停" : "恢复"}了游戏`);
+      broadcastNiu(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("niu:host-points", ({ playerId, points }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyNiu(socket);
+      if (room.hostId !== player.id) throw new Error("只有房主可以修改积分");
+      if (!["waiting", "result"].includes(room.phase)) throw new Error("请在两局之间修改积分");
+      const target = room.players.find((candidate) => candidate.id === playerId && candidate.seated);
+      if (!target) throw new Error("玩家不存在");
+      target.points = clamp(points, 0, 10000000, target.points);
+      niuMessage(room, `${player.name} 将 ${target.name} 的积分调整为 ${target.points}`);
+      if (target.points <= 0) unseatNiuPlayer(room, target);
+      broadcastNiu(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("niu:kick", ({ playerId }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyNiu(socket);
+      if (room.hostId !== player.id) throw new Error("只有房主可以剔除玩家");
+      if (!["waiting", "result"].includes(room.phase)) throw new Error("请在两局之间剔除玩家");
+      if (playerId === player.id) throw new Error("房主不能剔除自己");
+      const index = room.players.findIndex((candidate) => candidate.id === playerId);
+      if (index < 0) throw new Error("玩家不存在");
+      const [target] = room.players.splice(index, 1);
+      if (target.socketId) io.to(target.socketId).emit("niu:kicked", { message: "你已被房主移出牛牛房间" });
+      niuMessage(room, `${target.name} 已被移出房间`);
+      broadcastNiu(room);
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("niu:chat", ({ text }, reply = () => {}) => {
+    try {
+      const { room, player } = identifyNiu(socket);
+      const message = String(text || "").trim().slice(0, 160);
+      if (!message) return reply({ ok: false, error: "消息不能为空" });
+      room.messages.push({ id: randomUUID(), type: "chat", name: player.name, text: message, at: Date.now() });
+      broadcastNiu(room);
+      io.to(`niu:${room.id}`).emit("niu:chat-bubble", { playerId: player.id, text: message, expiresAt: Date.now() + 6000 });
+      reply({ ok: true });
+    } catch (error) { reply({ ok: false, error: error.message }); }
+  });
+
+  socket.on("disconnect", () => {
+    try {
+      const { room, player } = identifyNiu(socket);
+      player.connected = false;
+      player.socketId = null;
+      if (room.phase === "bid" && player.cards.length === 4 && player.bid === null) { player.bid = 0; progressNiuBids(room); }
+      if (room.phase === "bet" && player.id !== room.bankerId && player.cards.length === 4 && player.bet === null) { player.bet = 1; progressNiuBets(room); }
+      const online = room.players.filter((candidate) => candidate.connected);
+      if (room.hostId === player.id && online.length) room.hostId = online[0].id;
+      if (!online.length) setTimeout(() => { if (!room.players.some((candidate) => candidate.connected)) niuRooms.delete(room.id); }, 30 * 60 * 1000);
+      broadcastNiu(room);
+    } catch { /* not in a niuniu room */ }
   });
 });
 

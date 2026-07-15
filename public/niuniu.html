@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#161b18" />
+  <title>看四张抢庄牛牛 · River Club</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;900&family=Noto+Sans+SC:wght@400;600;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/niuniu.css" />
+</head>
+<body>
+  <header class="niu-header">
+    <a class="niu-brand" href="/"><span>R</span><div>RIVER <b>CLUB</b><small>GAME COLLECTION</small></div></a>
+    <div class="niu-title">看四张抢庄牛牛</div>
+    <button id="rules-button" class="outline-button">游戏规则</button>
+  </header>
+
+  <main id="niu-lobby" class="niu-lobby">
+    <section class="niu-hero">
+      <div class="hero-copy">
+        <p>GAME 02 · BANKER NIUNIU</p>
+        <h1>看四张，<br /><em>敢不敢抢庄？</em></h1>
+        <span>每人先看自己的四张牌，再决定抢庄倍数。定庄、下注、第五张，一局见牛。</span>
+        <div class="rule-chips"><i>五小牛 ×6</i><i>炸弹牛 ×5</i><i>五花牛 ×4</i></div>
+      </div>
+      <form id="niu-create-form" class="create-card">
+        <div class="create-head"><span>CREATE A TABLE</span><h2>创建牛牛房间</h2></div>
+        <label>你的昵称<input id="niu-create-name" maxlength="16" placeholder="例如：牛牛老王" required /></label>
+        <div class="form-grid">
+          <label>起始积分<input id="niu-starting-points" type="number" min="100" max="100000" value="1000" /></label>
+          <label>房间底注<input id="niu-base-score" type="number" min="1" max="10000" value="10" /></label>
+          <label>人数上限<input id="niu-max-players" type="number" min="2" max="6" value="6" /></label>
+        </div>
+        <button class="primary-button" type="submit">创建私人房间 <b>→</b></button>
+        <p>纯娱乐积分，无充值、提现或现金价值。</p>
+      </form>
+    </section>
+  </main>
+
+  <main id="niu-room" class="niu-room hidden">
+    <div class="room-toolbar">
+      <a class="mini-brand" href="/"><span>R</span></a>
+      <div class="room-code">牛牛房间 <strong id="niu-room-id">—</strong></div>
+      <div class="toolbar-actions">
+        <button id="niu-away" class="outline-button">暂时离座</button>
+        <button id="niu-pause" class="outline-button host-only hidden">暂停</button>
+        <button id="niu-manage" class="outline-button host-only hidden">玩家管理</button>
+        <button id="niu-copy" class="outline-button">复制邀请链接</button>
+      </div>
+    </div>
+    <div class="niu-game-layout">
+      <section class="niu-table-zone">
+        <div class="round-info"><span id="niu-round">等待开局</span><span id="niu-base">底注 10</span></div>
+        <div class="niu-table">
+          <div class="niu-felt-line"></div>
+          <div id="niu-seats" class="niu-seats"></div>
+          <div class="niu-center">
+            <small>看四张抢庄牛牛</small>
+            <strong id="niu-phase">等待房主开始</strong>
+            <span id="niu-banker-info">先发四张 · 再抢庄</span>
+          </div>
+          <div id="niu-result" class="niu-result hidden"></div>
+        </div>
+        <div class="niu-action-panel">
+          <div class="own-hand"><span>你的牌</span><div id="niu-own-cards" class="niu-own-cards"></div><strong id="niu-hand-name">等待发牌</strong></div>
+          <div id="niu-action-message" class="niu-action-message">等待房主开始</div>
+          <div id="niu-bid-actions" class="niu-actions hidden">
+            <span>选择抢庄倍数</span>
+            <div><button data-niu-bid="0">不抢</button><button data-niu-bid="1">1倍</button><button data-niu-bid="2">2倍</button><button data-niu-bid="3">3倍</button><button data-niu-bid="4">4倍</button></div>
+          </div>
+          <div id="niu-bet-actions" class="niu-actions hidden">
+            <span>选择下注倍数</span>
+            <div><button data-niu-bet="1">1倍</button><button data-niu-bet="2">2倍</button><button data-niu-bet="3">3倍</button><button data-niu-bet="5">5倍</button><button data-niu-bet="10">10倍</button><button data-niu-bet="15">15倍</button></div>
+          </div>
+          <button id="niu-start" class="primary-button room-start hidden">开始发四张 <b>→</b></button>
+          <button id="niu-reseat" class="primary-button room-start hidden">重新坐下 <b>↻</b></button>
+        </div>
+      </section>
+      <aside id="niu-sidebar" class="niu-sidebar">
+        <button id="niu-close-sidebar" class="close-side">关闭 ×</button>
+        <div class="niu-tabs"><button data-niu-tab="chat" class="active">聊天 <span id="niu-chat-count">0</span></button><button data-niu-tab="players">玩家 <span id="niu-player-count">0</span></button><button data-niu-tab="activity">牌局动态</button></div>
+        <div id="niu-chat-pane" class="niu-pane chat-pane"><div id="niu-chat-list" class="niu-feed"></div><form id="niu-chat-form"><input id="niu-chat-input" maxlength="160" placeholder="说点什么…" /><button>↑</button></form></div>
+        <div id="niu-players-pane" class="niu-pane hidden"><div id="niu-player-list"></div></div>
+        <div id="niu-activity-pane" class="niu-pane hidden"><div id="niu-activity-list" class="niu-feed"></div></div>
+      </aside>
+    </div>
+    <nav class="niu-mobile-dock"><button data-niu-mobile="table" class="active">♠<small>牌桌</small></button><button data-niu-mobile="chat">◇<small>聊天</small></button><button data-niu-mobile="players">◎<small>玩家</small></button><button id="niu-mobile-away">↗<small>离座</small></button><button id="niu-mobile-manage" class="host-only hidden">⚙<small>管理</small></button></nav>
+  </main>
+
+  <div id="niu-join-modal" class="niu-modal hidden">
+    <form id="niu-join-form" class="niu-modal-card join-modal-card">
+      <p>CHOOSE YOUR SEAT</p><h2 id="niu-join-title">选择牛牛座位</h2>
+      <div id="niu-seat-step"><div class="niu-seat-picker"><div class="picker-felt">牛<small id="niu-picker-code">ROOM</small></div><div id="niu-seat-options"></div></div><span id="niu-seat-status">读取座位中…</span></div>
+      <div id="niu-join-details" class="hidden"><button id="niu-back-seats" type="button" class="link-button">← 重新选座</button><div class="selected-seat">已选择 <strong id="niu-selected-seat">—</strong> 号座位</div><label>昵称<input id="niu-join-name" maxlength="16" required /></label><label>入座积分<input id="niu-join-points" type="number" min="100" max="100000" value="1000" /></label><button class="primary-button" type="submit">确认入座 <b>→</b></button></div>
+    </form>
+  </div>
+
+  <div id="niu-rules" class="niu-modal hidden"><section class="niu-modal-card rules-card"><button id="close-rules" class="modal-close">×</button><p>HOW TO PLAY</p><h2>看四张抢庄牛牛规则</h2><ol><li><b>发牌：</b>每人先看到自己的 4 张牌，然后选择不抢或 1–4 倍抢庄。</li><li><b>定庄：</b>最高抢庄倍数者坐庄；最高倍数相同时随机选择庄家。</li><li><b>下注：</b>闲家选择 1/2/3/5/10/15 倍，随后发第 5 张牌并自动拼牌。</li><li><b>牌型：</b>任意三张点数和为 10 的倍数，余下两张之和个位即牛几；10/J/Q/K 算 10 点。</li><li><b>大小：</b>五小牛 ＞ 炸弹牛 ＞ 五花牛 ＞ 牛牛 ＞ 牛九…牛一 ＞ 无牛。</li><li><b>倍率：</b>牛一至牛六/无牛 ×1，牛七至牛九 ×2，牛牛 ×3，五花牛 ×4，炸弹牛 ×5，五小牛 ×6。</li><li><b>结算：</b>底注 × 胜方牌型倍数 × 抢庄倍数 × 闲家下注倍数。每人单局输赢不超过本局带入积分，庄家资金不足时按理论输赢比例赔付。</li></ol></section></div>
+
+  <div id="niu-admin" class="niu-modal hidden"><section class="niu-modal-card admin-card"><button id="close-niu-admin" class="modal-close">×</button><p>ROOM OWNER</p><h2>牛牛玩家管理</h2><div id="niu-admin-list"></div></section></div>
+  <div id="niu-toast" class="niu-toast"></div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module" src="/niuniu.js"></script>
+</body>
+</html>

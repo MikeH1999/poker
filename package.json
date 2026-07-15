@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --watch server.mjs",
     "start": "node server.mjs",
-    "test:smoke": "node tests/smoke.mjs"
+    "test:smoke": "node tests/smoke.mjs",
+    "test:niuniu": "node tests/niuniu.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",
