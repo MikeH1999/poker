@@ -1,0 +1,18 @@
+{
+  "name": "river-club",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.mjs",
+    "start": "node server.mjs",
+    "test:smoke": "node tests/smoke.mjs"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.3"
+  }
+}

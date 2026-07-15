@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b1713" />
+  <meta name="description" content="River Club — 和朋友随时开一桌公平的积分制德州扑克。" />
+  <title>River Club · 好友德州扑克</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="noise"></div>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="River Club 首页">
+      <span class="brand-mark">R</span>
+      <span>RIVER <b>CLUB</b></span>
+    </a>
+    <nav>
+      <a href="#how">怎么玩</a>
+      <a href="#fair">公平机制</a>
+      <span class="status-pill"><i></i> 服务在线</span>
+    </nav>
+  </header>
+
+  <main id="landing" class="landing">
+    <section class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow"><span>♠</span> 私人牌桌 · 即开即玩</div>
+        <h1>今晚，<br /><em>河牌见。</em></h1>
+        <p class="hero-lead">创建一个只属于你们的德州扑克房间。无需注册，复制链接，好友打开浏览器就能坐下。</p>
+        <div class="hero-points">
+          <span>✓ 纯积分制</span><span>✓ 2–8 人</span><span>✓ 实时同步</span>
+        </div>
+      </div>
+
+      <div class="lobby-card">
+        <div class="card-head">
+          <div>
+            <span class="step-label">STEP 01</span>
+            <h2>准备入座</h2>
+          </div>
+          <span class="mini-cards">A<span>♥</span></span>
+        </div>
+        <label class="field-label" for="player-name">你的昵称</label>
+        <div class="input-shell"><span>◎</span><input id="player-name" maxlength="16" placeholder="例如：河牌老王" autocomplete="nickname" /></div>
+
+        <div id="create-panel">
+          <button id="create-room" class="primary-btn"><span>创建私人牌桌</span><b>→</b></button>
+          <button id="settings-toggle" class="text-btn">自定义盲注与起始积分 <span>⌄</span></button>
+          <div id="settings" class="settings hidden">
+            <label>起始积分 <input id="starting-points" type="number" min="500" max="100000" value="3000" /></label>
+            <label>小盲 <input id="small-blind" type="number" min="5" value="10" /></label>
+            <label>大盲 <input id="big-blind" type="number" min="10" value="20" /></label>
+            <label>人数上限 <input id="max-players" type="number" min="2" max="8" value="8" /></label>
+          </div>
+        </div>
+
+        <div class="divider"><span>或者输入房间码</span></div>
+        <div class="join-row">
+          <input id="room-code" maxlength="6" placeholder="6 位房间码" autocapitalize="characters" />
+          <button id="join-code">加入</button>
+        </div>
+        <p class="fine-print">仅供娱乐的虚拟积分，没有充值、提现或现金价值。</p>
+      </div>
+    </section>
+
+    <section id="how" class="how-section">
+      <p class="section-kicker">THREE EASY STEPS</p>
+      <h2>开桌，比发群消息还快</h2>
+      <div class="steps">
+        <article><span>01</span><div class="step-icon">♣</div><h3>创建牌桌</h3><p>设置起始积分和盲注，私人房间立刻生成。</p></article>
+        <article><span>02</span><div class="step-icon">↗</div><h3>分享链接</h3><p>把邀请链接发到微信或群聊，好友无需注册。</p></article>
+        <article><span>03</span><div class="step-icon red">♥</div><h3>开始发牌</h3><p>房主点击发牌，所有操作和积分实时同步。</p></article>
+      </div>
+    </section>
+
+    <section id="fair" class="fair-section">
+      <div><p class="section-kicker">FAIR BY DESIGN</p><h2>牌面有输赢，<br />规则没有秘密。</h2></div>
+      <p>底牌由服务端洗牌并按玩家隔离发送，其他玩家与房主都无法提前查看。摊牌时才公开仍在局中的手牌。</p>
+    </section>
+  </main>
+
+  <main id="room" class="room hidden">
+    <header class="room-bar">
+      <a class="brand compact" href="/"><span class="brand-mark">R</span><span>RIVER <b>CLUB</b></span></a>
+      <div class="room-ident"><span>私人牌桌</span><strong id="room-id">—</strong></div>
+      <div class="room-actions">
+        <span class="secure-label">◈ 公平牌局</span>
+        <button id="away-toggle" class="ghost-btn">暂时离座</button>
+        <button id="pause-game" class="ghost-btn host-only hidden">暂停</button>
+        <button id="manage-room" class="ghost-btn host-only hidden">房间设置</button>
+        <button id="copy-link" class="ghost-btn">复制邀请链接</button>
+      </div>
+    </header>
+
+    <div class="game-layout">
+      <section class="table-zone">
+        <div class="table-top-info">
+          <span id="hand-number">等待开局</span>
+          <span id="blind-info">盲注 —/—</span>
+        </div>
+        <div class="poker-table">
+          <div class="felt-line"></div>
+          <div class="table-logo"><span class="brand-mark">R</span><b>RIVER CLUB</b><small>PRIVATE TABLE</small></div>
+          <div id="pot" class="pot">底池 <strong>0</strong></div>
+          <div id="community-cards" class="community-cards"></div>
+          <div id="seats" class="seats"></div>
+          <div id="result-banner" class="result-banner hidden"></div>
+        </div>
+
+        <div id="action-panel" class="action-panel">
+          <div class="my-cards-block"><span>你的底牌</span><div id="my-cards" class="my-cards"></div></div>
+          <div id="waiting-actions" class="waiting-actions">等待房主开始下一手</div>
+          <div id="bet-actions" class="bet-actions hidden">
+            <button data-action="fold" class="action-btn danger">弃牌</button>
+            <button data-action="check" class="action-btn">过牌</button>
+            <button data-action="call" class="action-btn" id="call-btn">跟注</button>
+            <div class="raise-control">
+              <input id="raise-range" type="range" min="0" max="100" value="50" />
+              <div><span>加注到</span><input id="raise-amount" type="number" /></div>
+              <button data-action="raise" class="action-btn gold">加注</button>
+            </div>
+            <button data-action="allin" class="allin-btn">ALL IN</button>
+          </div>
+          <button id="start-hand" class="primary-btn start-btn hidden">开始发牌 <b>→</b></button>
+        </div>
+      </section>
+
+      <aside id="sidebar" class="sidebar">
+        <button id="close-sidebar" class="close-sidebar">关闭 ×</button>
+        <div class="side-tabs"><button class="active">玩家 <span id="player-count">0</span></button><button>牌局动态</button></div>
+        <div id="player-list" class="player-list"></div>
+        <div class="feed-title"><span>牌局动态</span><i></i></div>
+        <div id="message-list" class="message-list"></div>
+        <form id="chat-form" class="chat-form"><input id="chat-input" maxlength="160" placeholder="说点什么…" /><button>↑</button></form>
+      </aside>
+    </div>
+    <nav class="mobile-dock" aria-label="手机端牌桌导航">
+      <button data-mobile-panel="table" class="active"><span>♠</span>牌桌</button>
+      <button data-mobile-panel="players"><span>◎</span>玩家</button>
+      <button data-mobile-panel="chat"><span>◇</span>动态</button>
+      <button id="mobile-away"><span>↗</span>离座</button>
+      <button id="mobile-manage" class="host-only hidden"><span>⚙</span>管理</button>
+    </nav>
+  </main>
+
+  <div id="admin-modal" class="modal admin-modal hidden">
+    <section class="admin-card">
+      <header class="admin-head">
+        <div><p class="section-kicker">ROOM OWNER CONTROLS</p><h2>房间管理</h2></div>
+        <button id="close-admin" aria-label="关闭">×</button>
+      </header>
+      <div class="admin-tabs"><button class="active" data-admin-tab="game">牌局设置</button><button data-admin-tab="players">玩家管理</button></div>
+      <div id="admin-game" class="admin-pane">
+        <div class="permission-note">只有房主可以修改这些设置，变更会同步给所有玩家。</div>
+        <div class="setting-block">
+          <div><span class="setting-index">01</span><h3>牌桌状态</h3><p>暂停后保留当前手牌与底池，所有下注操作会被冻结。</p></div>
+          <button id="admin-pause" class="switch-button">暂停游戏</button>
+        </div>
+        <div class="setting-block blind-setting">
+          <div><span class="setting-index">02</span><h3>盲注级别</h3><p>新盲注从下一手开始生效。</p></div>
+          <label>小盲<input id="admin-sb" type="number" min="1" /></label>
+          <label>大盲<input id="admin-bb" type="number" min="2" /></label>
+          <button id="save-blinds" class="admin-primary">保存盲注</button>
+        </div>
+        <div class="setting-block">
+          <div><span class="setting-index">03</span><h3>继续发牌</h3><p>牌局结束后由房主决定何时开始下一手。</p></div>
+          <button id="admin-start" class="admin-primary">开始下一手</button>
+        </div>
+      </div>
+      <div id="admin-players" class="admin-pane hidden">
+        <div class="permission-note">可以调整玩家的娱乐积分或将其移出房间。进行中的牌局不可修改。</div>
+        <div id="admin-player-list" class="admin-player-list"></div>
+      </div>
+    </section>
+  </div>
+
+  <div id="join-modal" class="modal hidden">
+    <form id="join-form" class="modal-card">
+      <span class="modal-suit">♠</span>
+      <p class="section-kicker">PRIVATE INVITATION</p>
+      <h2>你收到一张牌桌邀请</h2>
+      <p>输入昵称即可入座，无需注册。</p>
+      <label class="field-label" for="join-name">你的昵称</label>
+      <div class="input-shell"><span>◎</span><input id="join-name" maxlength="16" placeholder="例如：河牌老王" autocomplete="nickname" /></div>
+      <button class="primary-btn" type="submit">加入牌桌 <b>→</b></button>
+    </form>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
