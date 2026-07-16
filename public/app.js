@@ -315,7 +315,8 @@ function configureActions(player, hand) {
   els.raiseAmount.min = min;
   els.raiseAmount.max = max;
   els.raiseAmount.value = els.raiseRange.value;
-  $('[data-action="raise"]').disabled = max <= hand.currentBet;
+  $('[data-action="raise"]').disabled = !player.canRaise || max <= hand.currentBet;
+  $('[data-action="allin"]').disabled = !player.canRaise && max > hand.currentBet;
 }
 
 function renderAdmin() {

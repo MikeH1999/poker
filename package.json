@@ -9,7 +9,8 @@
     "test:smoke": "node tests/smoke.mjs",
     "test:niuniu": "node tests/niuniu.mjs",
     "test:zjh": "node tests/zjh.mjs",
-    "test:doudizhu": "node tests/doudizhu.mjs"
+    "test:doudizhu": "node tests/doudizhu.mjs",
+    "test:regressions": "node tests/regressions.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",

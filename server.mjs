@@ -110,6 +110,7 @@ function addPlayer(room, name, requestedPoints, requestedSeat) {
     bet: 0,
     totalBet: 0,
     acted: false,
+    lastActionBet: null,
     status: "等待中",
     away: false,
     seated: true,
@@ -144,6 +145,7 @@ function publicState(room, viewerId) {
       connected: player.connected,
       folded: Boolean(hand && player.folded),
       bet: hand ? player.bet : 0,
+      canRaise: Boolean(hand && (player.lastActionBet === null || hand.currentBet - player.lastActionBet >= hand.minRaise)),
       status: player.status,
       away: player.away,
       isTurn: Boolean(hand && hand.actionPlayerId === player.id),
@@ -253,6 +255,7 @@ function startHand(room) {
     player.bet = 0;
     player.totalBet = 0;
     player.acted = false;
+    player.lastActionBet = null;
     player.status = active.includes(player) ? "思考中" : !player.seated ? "积分耗尽，等待重新坐下" : player.away ? "暂时离座" : player.points <= 0 ? "积分不足" : "离线";
   }
 
@@ -304,24 +307,29 @@ function act(room, player, action, amount, options = {}) {
   if (hand.actionPlayerId !== player.id) throw new Error("还没轮到你");
   if (player.folded) throw new Error("你已经弃牌");
   const callAmount = Math.max(0, hand.currentBet - player.bet);
+  const canRaise = player.lastActionBet === null || hand.currentBet - player.lastActionBet >= hand.minRaise;
   let label = "";
 
   if (action === "fold") {
     player.folded = true;
     player.acted = true;
+    player.lastActionBet = hand.currentBet;
     player.status = "已弃牌";
     label = "弃牌";
   } else if (action === "check") {
     if (callAmount > 0) throw new Error("当前不能过牌");
     player.acted = true;
+    player.lastActionBet = hand.currentBet;
     player.status = "已过牌";
     label = "过牌";
   } else if (action === "call") {
     const paid = takeBet(player, callAmount);
     player.acted = true;
+    player.lastActionBet = hand.currentBet;
     player.status = player.points === 0 ? "全下" : "已跟注";
     label = paid < callAmount ? `全下 ${paid}` : `跟注 ${paid}`;
   } else if (action === "raise") {
+    if (!canRaise) throw new Error("短码全下未重新开放加注，你只能跟注或弃牌");
     const maxTarget = player.bet + player.points;
     const target = clamp(amount, 0, maxTarget, hand.currentBet + hand.minRaise);
     const minTarget = hand.currentBet + hand.minRaise;
@@ -333,6 +341,7 @@ function act(room, player, action, amount, options = {}) {
     hand.minRaise = Math.max(hand.minRaise, hand.currentBet - previous);
     for (const other of contenders(room)) if (other.id !== player.id && other.points > 0) other.acted = false;
     player.acted = true;
+    player.lastActionBet = hand.currentBet;
     player.status = player.points === 0 ? "全下" : "已加注";
     label = `${player.points === 0 ? "全下" : "加注到"} ${player.bet}`;
   } else if (action === "allin") {
@@ -340,14 +349,17 @@ function act(room, player, action, amount, options = {}) {
     if (target <= hand.currentBet) {
       const paid = takeBet(player, player.points);
       player.acted = true;
+      player.lastActionBet = hand.currentBet;
       label = `全下 ${paid}`;
     } else {
+      if (!canRaise) throw new Error("短码全下未重新开放加注，你只能跟注或弃牌");
       const previous = hand.currentBet;
       takeBet(player, player.points);
       hand.currentBet = player.bet;
       hand.minRaise = Math.max(hand.minRaise, hand.currentBet - previous);
       for (const other of contenders(room)) if (other.id !== player.id && other.points > 0) other.acted = false;
       player.acted = true;
+      player.lastActionBet = hand.currentBet;
       label = `全下到 ${player.bet}`;
     }
     player.status = "全下";
@@ -476,6 +488,7 @@ function advanceStreet(room, runout = false) {
   for (const player of room.players) {
     player.bet = 0;
     player.acted = false;
+    player.lastActionBet = null;
     if (!player.folded && player.points > 0) player.status = runout ? "等待摊牌" : "思考中";
   }
   hand.currentBet = 0;
@@ -584,6 +597,7 @@ function reseatPlayer(room, player, { name, points, seat }) {
   player.bet = 0;
   player.totalBet = 0;
   player.acted = false;
+  player.lastActionBet = null;
   player.status = room.hand && !room.hand.result ? "下一手入座" : "等待中";
   systemMessage(room, `${player.name} 第 ${player.rejoinCount} 次重新坐下${player.status === "下一手入座" ? "，将从下一手加入" : ""}`);
 }
@@ -937,7 +951,7 @@ function addNiuPlayer(room, name, points, requestedSeat) {
     id: randomUUID(), token: randomBytes(18).toString("base64url"), socketId: null,
     name: cleanName(name), seat, points: clamp(points, Math.max(1, room.settings.baseScore), 100000, Math.max(room.settings.startingPoints, room.settings.baseScore)),
     connected: true, seated: true, away: false, rejoinCount: 0,
-    cards: [], bid: null, bet: null, hand: null, delta: 0, broughtPoints: 0,
+    cards: [], bid: null, bet: null, hand: null, delta: 0, broughtPoints: 0, resultSeat: null,
     status: "等待中",
   };
   room.players.push(player);
@@ -962,8 +976,9 @@ function publicNiuState(room, viewerId) {
     phaseDeadline: room.phaseDeadline, nextRoundAt: room.nextRoundAt, serverTime: Date.now(),
     settings: room.settings, result: room.result,
     viewer: viewer ? { id: viewer.id, seated: viewer.seated, rejoinCount: viewer.rejoinCount, status: viewer.status } : null,
-    players: room.players.filter((player) => player.seated).map((player) => ({
-      id: player.id, name: player.name, seat: player.seat, points: player.points,
+    players: room.players.filter((player) => player.seated || (revealAll && player.cards.length === 5)).map((player) => ({
+      id: player.id, name: player.name, seat: player.seated ? player.seat : player.resultSeat, points: player.points,
+      seated: player.seated,
       connected: player.connected, away: player.away, rejoinCount: player.rejoinCount,
       status: player.status, bid: player.bid, bet: player.bet, delta: player.delta,
       cardCount: player.cards.length,
@@ -1051,6 +1066,7 @@ function startNiuRound(room) {
     player.hand = null;
     player.delta = 0;
     player.broughtPoints = player.points;
+    player.resultSeat = null;
     player.status = players.includes(player) ? "发牌中 · 0/4" : player.seated ? "下一局加入" : "等待重新坐下";
   }
   niuMessage(room, `第 ${room.roundNumber} 局开始，依次发出四张牌`);
@@ -1238,6 +1254,7 @@ function settleNiuRound(room) {
 
 function unseatNiuPlayer(room, player) {
   if (!player.seated) return;
+  player.resultSeat = player.seat;
   player.seated = false;
   player.seat = null;
   player.away = false;
@@ -2339,6 +2356,7 @@ io.on("connection", (socket) => {
       player.socketId = socket.id; player.connected = true;
       socket.data.ddzRoomId = room.id; socket.data.ddzPlayerId = player.id;
       socket.join(`ddz:${room.id}`);
+      if (["bidding", "playing"].includes(room.phase) && !room.actionDeadline) armDdzActionTimer(room);
       broadcastDdz(room);
       reply({ ok: true, roomId: room.id, playerId: player.id, token: player.token, rejoinCount: player.rejoinCount });
     } catch (error) { reply({ ok: false, error: error.message }); }

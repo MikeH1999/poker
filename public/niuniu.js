@@ -133,7 +133,7 @@ function render() {
   $("#niu-phase").textContent = phasePrompt(state.phase);
   const banker = state.players.find((candidate) => candidate.id === state.bankerId);
   $("#niu-banker-info").textContent = banker ? `庄家 ${banker.name} · 抢庄 ${state.bankerBid} 倍` : state.phase === "banker_select" ? `${state.bankerCandidates.length} 位最高倍数玩家中随机定庄` : "先发四张 · 再抢庄";
-  $("#niu-player-count").textContent = state.players.length;
+  $("#niu-player-count").textContent = state.players.filter((player) => player.seated !== false).length;
   $$(".host-only").forEach((element) => element.classList.toggle("hidden", !isHost));
   $("#niu-pause").textContent = state.paused ? "恢复" : "暂停";
   $("#niu-auto-start").textContent = `自动下一局：${state.settings.autoStartNextRound ? "开" : "关"}`;
@@ -194,7 +194,7 @@ function renderSidebar() {
 
 function renderAdmin() {
   if (!state || me !== state.hostId) return;
-  $("#niu-admin-list").innerHTML = state.players.map((player) => `<div class="admin-player-row" data-player-id="${player.id}"><strong>${escapeHTML(player.name)}${player.id === me ? "（你）" : ""}</strong><input data-niu-points type="number" min="0" value="${player.points}" /><button data-niu-kick ${player.id === me ? "disabled" : ""}>${player.id === me ? "房主" : "剔除"}</button></div>`).join("");
+  $("#niu-admin-list").innerHTML = state.players.filter((player) => player.seated !== false).map((player) => `<div class="admin-player-row" data-player-id="${player.id}"><strong>${escapeHTML(player.name)}${player.id === me ? "（你）" : ""}</strong><input data-niu-points type="number" min="0" value="${player.points}" /><button data-niu-kick ${player.id === me ? "disabled" : ""}>${player.id === me ? "房主" : "剔除"}</button></div>`).join("");
 }
 
 function cardHTML(card, dealing = false) {
