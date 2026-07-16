@@ -383,12 +383,29 @@ input::placeholder { color: #63716a; }
 }
 
 @media (max-width: 640px) {
-  .site-header { padding: 0 18px; }
+  .site-header { height: 60px; padding: 0 16px; }
+  .site-header .brand { font-size: 12px; }
+  .site-header .brand-mark { width: 29px; height: 29px; font-size: 16px; }
   .site-header nav a { display: none; }
-  .hero { padding: 46px 18px 70px; }
-  .hero h1 { font-size: 64px; }
-  .hero-points { gap: 12px; }
-  .lobby-card { padding: 25px 20px; }
+  .status-pill { padding: 7px 10px; font-size: 10px; }
+  .hero { min-height: 0; padding: 30px 16px 54px; gap: 27px; }
+  .hero-copy { text-align: left; }
+  .eyebrow { font-size: 10px; }
+  .hero h1 { margin: 14px 0 16px; font-size: 52px; line-height: .98; }
+  .hero h1 br { display: none; }
+  .hero-lead { margin: 0; font-size: 14px; line-height: 1.7; }
+  .hero-points { justify-content: flex-start; gap: 9px 15px; margin-top: 18px; font-size: 12px; }
+  .lobby-card { padding: 24px 18px 20px; }
+  .card-head { margin-bottom: 20px; }
+  .card-head h2 { font-size: 27px; }
+  .mini-cards { width: 36px; height: 48px; font-size: 19px; }
+  .field-label { font-size: 11px; }
+  .input-shell { height: 50px; }
+  .input-shell input, .join-row input, .settings input { font-size: 16px; }
+  .primary-btn { min-height: 52px; }
+  .settings { grid-template-columns: 1fr 1fr; }
+  .settings input { min-height: 44px; padding: 0 10px; }
+  .join-row button { min-height: 48px; }
   .how-section, .fair-section { padding: 70px 20px; }
   .how-section > h2 { font-size: 38px; }
   .steps, .fair-section { grid-template-columns: 1fr; }
@@ -406,4 +423,11 @@ input::placeholder { color: #63716a; }
   .bet-actions { flex-wrap: wrap; justify-content: center; }
   .raise-control { order: 2; width: 100%; max-width: none; }
   .action-btn { min-width: 58px; }
+}
+
+@media (max-width: 390px) {
+  .hero { padding-inline: 13px; }
+  .hero h1 { font-size: 45px; }
+  .lobby-card { padding-inline: 15px; }
+  .settings { grid-template-columns: 1fr; }
 }

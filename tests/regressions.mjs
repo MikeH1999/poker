@@ -119,8 +119,21 @@ async function testNiuLandscapeBreakpoint() {
   assert.match(css, /@media\(max-width:760px\),\(max-width:900px\) and \(max-height:600px\) and \(orientation:landscape\)/);
 }
 
+async function testMobileLobbyBreakpoints() {
+  const [sharedCss, holdemCss] = await Promise.all([
+    readFile(new URL("../public/niuniu.css", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(sharedCss, /@media\(max-width:760px\).*?\.niu-hero\{[^}]*display:flex;flex-direction:column/s);
+  assert.match(sharedCss, /\.create-card\{width:100%;[^}]*padding:24px 18px 20px/);
+  assert.match(sharedCss, /@media\(max-width:390px\).*?\.form-grid\{grid-template-columns:1fr\}/s);
+  assert.match(holdemCss, /@media \(max-width: 640px\).*?\.hero \{ min-height: 0;[^}]*gap: 27px;/s);
+  assert.match(holdemCss, /@media \(max-width: 390px\).*?\.settings \{ grid-template-columns: 1fr; \}/s);
+}
+
 await testShortAllIn();
 await testNiuResultVisibility();
 await testDdzReconnectTimer();
 await testNiuLandscapeBreakpoint();
-console.log(JSON.stringify({ shortAllInReopen: "ok", niuBustedResult: "ok", ddzReconnectTimer: "ok", niuLandscape: "ok" }));
+await testMobileLobbyBreakpoints();
+console.log(JSON.stringify({ shortAllInReopen: "ok", niuBustedResult: "ok", ddzReconnectTimer: "ok", niuLandscape: "ok", mobileLobby: "ok" }));
